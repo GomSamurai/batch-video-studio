@@ -14,9 +14,10 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 // -------------------------------------------------------------
-// Configuration & Presets Storage
+// Configuration & Presets Storage (Portable & Desktop Aware)
 // -------------------------------------------------------------
-const CONFIG_FILE = path.join(process.cwd(), 'config.json');
+const BASE_STORAGE_DIR = process.env.APP_DATA_PATH || process.cwd();
+const CONFIG_FILE = path.join(BASE_STORAGE_DIR, 'config.json');
 let config = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: 'gemini-3.8-flash',
@@ -35,7 +36,7 @@ if (fs.existsSync(CONFIG_FILE)) {
   }
 }
 
-const PRESETS_FILE = path.join(process.cwd(), 'presets.json');
+const PRESETS_FILE = path.join(BASE_STORAGE_DIR, 'presets.json');
 let presets = [];
 if (fs.existsSync(PRESETS_FILE)) {
   try {
@@ -45,16 +46,37 @@ if (fs.existsSync(PRESETS_FILE)) {
   }
 }
 
+// -------------------------------------------------------------
+// FFmpeg Binary Resolution (System PATH or Portable bin/ folder)
+// -------------------------------------------------------------
+let ffmpegCmd = 'ffmpeg';
+function resolveFfmpegCommand() {
+  const possiblePaths = [
+    path.join(process.cwd(), 'bin', 'ffmpeg.exe'),
+    path.join(path.dirname(process.execPath || ''), 'bin', 'ffmpeg.exe'),
+    path.join(process.resourcesPath || '', 'bin', 'ffmpeg.exe'),
+    path.join(process.resourcesPath || '', 'ffmpeg.exe')
+  ];
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      return `"${p}"`;
+    }
+  }
+  return 'ffmpeg';
+}
+
+ffmpegCmd = resolveFfmpegCommand();
+
 // Check FFmpeg availability
 let ffmpegAvailable = false;
 async function checkFFmpeg() {
   try {
-    await execPromise('ffmpeg -version');
+    await execPromise(`${ffmpegCmd} -version`);
     ffmpegAvailable = true;
-    console.log('✅ FFmpeg detectado correctamente en el sistema.');
+    console.log(`✅ FFmpeg detectado correctamente (${ffmpegCmd}).`);
   } catch (err) {
     ffmpegAvailable = false;
-    console.warn('⚠️ FFmpeg no se encontró en el PATH. Asegúrate de tener FFmpeg instalado.');
+    console.warn('⚠️ FFmpeg no se encontró en el PATH ni en bin/. Asegúrate de tener FFmpeg instalado.');
   }
 }
 checkFFmpeg();
@@ -997,7 +1019,7 @@ app.post('/api/batch/start', async (req, res) => {
           }
 
           let inputIndex = 0;
-          let cmdArgs = ['ffmpeg', '-y'];
+          let cmdArgs = [ffmpegCmd, '-y'];
 
           const hasMultiSegments = keptIntervals.length > 1;
 
@@ -1178,7 +1200,7 @@ app.post('/api/batch/start', async (req, res) => {
             const concatStreams = concatParts.map((_, cIdx) => `[cv${cIdx}][ca${cIdx}]`).join('');
             concatFilters.push(`${concatStreams}concat=n=${concatParts.length}:v=1:a=1[concat_v][concat_a]`);
 
-            const concatCmd = `ffmpeg -y ${concatInputs.join(' ')} -filter_complex "${concatFilters.join(';')}" -map "[concat_v]" -map "[concat_a]" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k "${outputPath}"`;
+            const concatCmd = `${ffmpegCmd} -y ${concatInputs.join(' ')} -filter_complex "${concatFilters.join(';')}" -map "[concat_v]" -map "[concat_a]" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k "${outputPath}"`;
             console.log(`▶ Concatena Intro/Outro: ${concatCmd}`);
             await execPromise(concatCmd);
 
@@ -1285,6 +1307,28 @@ HASHTAGS: ${(copyData.hashtags || []).join(' ')}
     });
   })();
 });
+
+// -------------------------------------------------------------
+// Serve Static Vite Client in Production / Electron
+// -------------------------------------------------------------
+const candidateDistDirs = [
+  path.join(process.cwd(), 'dist'),
+  path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')), 'dist'),
+  path.join(process.resourcesPath || '', 'app', 'dist'),
+  path.join(process.resourcesPath || '', 'dist')
+];
+const productionDistDir = candidateDistDirs.find(d => fs.existsSync(path.join(d, 'index.html')));
+
+if (productionDistDir) {
+  console.log(`📦 Sirviendo cliente estático desde: ${productionDistDir}`);
+  app.use(express.static(productionDistDir));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/stream')) {
+      return next();
+    }
+    res.sendFile(path.join(productionDistDir, 'index.html'));
+  });
+}
 
 // -------------------------------------------------------------
 // WebSocket Real-time Broadcast

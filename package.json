@@ -1,15 +1,64 @@
 {
-  "name": "fframes",
+  "name": "batch-video-studio-ai",
+  "productName": "Batch Video Studio AI",
+  "version": "2.5.0",
+  "description": "Suite Profesional de Edición de Vídeo por Lotes con Visión Artificial IA",
   "private": true,
-  "version": "0.0.0",
+  "main": "electron/main.cjs",
   "type": "module",
   "scripts": {
     "dev": "concurrently \"node server.js\" \"vite --port 5173 --strictPort\"",
     "server": "node server.js",
     "client": "vite --port 5173 --strictPort",
     "build": "vite build",
+    "electron:dev": "concurrently \"node server.js\" \"vite --port 5173 --strictPort\" \"electron .\"",
+    "electron": "electron .",
+    "dist": "vite build && electron-builder --win nsis portable --x64",
+    "dist:portable": "vite build && electron-builder --win portable --x64",
+    "dist:installer": "vite build && electron-builder --win nsis --x64",
     "lint": "oxlint",
     "preview": "vite preview"
+  },
+  "build": {
+    "appId": "com.gomsamurai.batchvideostudioai",
+    "productName": "Batch Video Studio AI",
+    "copyright": "Copyright © 2026 GomSamurai",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "server.js",
+      "electron/**/*",
+      "package.json",
+      "presets.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Batch Video Studio AI"
+    },
+    "portable": {
+      "artifactName": "Batch-Video-Studio-AI-Portable-${version}.${ext}"
+    }
   },
   "dependencies": {
     "concurrently": "^10.0.5",
@@ -24,6 +73,9 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",
+    "cross-env": "^10.1.0",
+    "electron": "^44.8.0",
+    "electron-builder": "^26.15.3",
     "oxlint": "^1.81.0",
     "vite": "^8.3.0"
   }
