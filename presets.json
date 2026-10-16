@@ -1,0 +1,86 @@
+[
+  {
+    "id": "preset-linkedin-reels",
+    "name": "LinkedIn Shorts / Reels (9:16 + Fondo Blur + Copy IA)",
+    "options": {
+      "aspectRatio": "9:16",
+      "blurredBackground": true,
+      "watermarkEnabled": true,
+      "watermarkPosition": "bottom-right",
+      "watermarkOpacity": 0.85,
+      "watermarkScale": 0.15,
+      "normalizeAudio": true,
+      "speedMode": "multiplier",
+      "speed": 1.0,
+      "autoAiVisionRules": true,
+      "aiRemoveIntroLogo": true,
+      "aiRemoveOutroLogo": true,
+      "generateCopy": true,
+      "copyTone": "Profesional",
+      "saveCopyTxt": true
+    }
+  },
+  {
+    "id": "preset-youtube-169",
+    "name": "YouTube Standard (16:9 + Normalización LUFS)",
+    "options": {
+      "aspectRatio": "16:9",
+      "blurredBackground": false,
+      "watermarkEnabled": true,
+      "watermarkPosition": "top-right",
+      "watermarkOpacity": 0.9,
+      "watermarkScale": 0.12,
+      "normalizeAudio": true,
+      "speedMode": "multiplier",
+      "speed": 1.0,
+      "autoAiVisionRules": true,
+      "aiRemoveIntroLogo": true,
+      "aiRemoveOutroLogo": true,
+      "generateCopy": false,
+      "copyTone": "Profesional",
+      "saveCopyTxt": false
+    }
+  },
+  {
+    "id": "preset-square-feed",
+    "name": "Feed Cuadrado (1:1 + Fondo Blur + Copy IA)",
+    "options": {
+      "aspectRatio": "1:1",
+      "blurredBackground": true,
+      "watermarkEnabled": true,
+      "watermarkPosition": "bottom-right",
+      "watermarkOpacity": 0.85,
+      "watermarkScale": 0.14,
+      "normalizeAudio": true,
+      "speedMode": "multiplier",
+      "speed": 1.0,
+      "autoAiVisionRules": true,
+      "aiRemoveIntroLogo": true,
+      "aiRemoveOutroLogo": true,
+      "generateCopy": true,
+      "copyTone": "Storytelling",
+      "saveCopyTxt": true
+    }
+  },
+  {
+    "id": "preset-linkedin-portrait",
+    "name": "LinkedIn Retrato (4:5 + Fondo Blur + Copy IA)",
+    "options": {
+      "aspectRatio": "4:5",
+      "blurredBackground": true,
+      "watermarkEnabled": true,
+      "watermarkPosition": "bottom-right",
+      "watermarkOpacity": 0.85,
+      "watermarkScale": 0.14,
+      "normalizeAudio": true,
+      "speedMode": "multiplier",
+      "speed": 1.0,
+      "autoAiVisionRules": true,
+      "aiRemoveIntroLogo": true,
+      "aiRemoveOutroLogo": true,
+      "generateCopy": true,
+      "copyTone": "Educativo",
+      "saveCopyTxt": true
+    }
+  }
+]
