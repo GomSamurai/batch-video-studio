@@ -33,6 +33,9 @@
       "package.json",
       "presets.json"
     ],
+    "asarUnpack": [
+      "server.js"
+    ],
     "win": {
       "target": [
         {

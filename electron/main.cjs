@@ -1,12 +1,10 @@
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const http = require('http');
-const { fork } = require('child_process');
+const { pathToFileURL } = require('url');
 const fs = require('fs');
 
 let mainWindow = null;
-let serverProcess = null;
-
 const PORT = 3001;
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
@@ -26,35 +24,25 @@ if (!fs.existsSync(baseDataDir)) {
 
 process.env.APP_DATA_PATH = baseDataDir;
 
-function startBackend() {
-  const serverScript = path.join(__dirname, '..', 'server.js');
+async function startBackend() {
+  const possibleServerScripts = [
+    path.join(__dirname, '..', 'server.js'),
+    path.join(process.resourcesPath || '', 'app.asar.unpacked', 'server.js'),
+    path.join(process.resourcesPath || '', 'app', 'server.js'),
+  ];
+  const serverScript = possibleServerScripts.find(s => fs.existsSync(s)) || path.join(__dirname, '..', 'server.js');
+  console.log('[Electron] Iniciando motor de vídeo en proceso:', serverScript);
   
-  console.log('[Electron] Iniciando motor de vídeo en segundo plano:', serverScript);
-  
-  serverProcess = fork(serverScript, [], {
-    env: {
-      ...process.env,
-      PORT: PORT.toString(),
-      APP_DATA_PATH: baseDataDir,
-      ELECTRON_RUN: 'true'
-    },
-    stdio: 'pipe'
-  });
-
-  serverProcess.stdout?.on('data', (d) => {
-    process.stdout.write(`[Server] ${d}`);
-  });
-
-  serverProcess.stderr?.on('data', (d) => {
-    process.stderr.write(`[Server ERR] ${d}`);
-  });
-
-  serverProcess.on('exit', (code) => {
-    console.log(`[Electron] El servidor de vídeo finalizó con código: ${code}`);
-  });
+  try {
+    const fileUrl = pathToFileURL(serverScript).href;
+    await import(fileUrl);
+    console.log('[Electron] Backend Express & WebSockets iniciado correctamente en proceso.');
+  } catch (err) {
+    console.error('[Electron] Error al iniciar backend en proceso:', err);
+  }
 }
 
-function waitForServer(url, timeout = 15000) {
+function waitForServer(url, timeout = 12000) {
   const start = Date.now();
   return new Promise((resolve, reject) => {
     const check = () => {
@@ -73,7 +61,7 @@ function waitForServer(url, timeout = 15000) {
       if (Date.now() - start > timeout) {
         return reject(new Error('Backend server startup timeout'));
       }
-      setTimeout(check, 300);
+      setTimeout(check, 250);
     };
 
     check();
@@ -113,6 +101,17 @@ async function createWindow() {
     return { action: 'deny' };
   });
 
+  mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.warn('[Electron] Falló carga de URL:', errorCode, errorDescription, validatedURL);
+    if (errorCode === -102) { // ERR_CONNECTION_REFUSED
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.loadURL(`http://localhost:${PORT}`);
+        }
+      }, 800);
+    }
+  });
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
@@ -123,23 +122,23 @@ async function createWindow() {
     
     if (isDev) {
       try {
-        await waitForServer('http://localhost:5173', 2500);
+        await waitForServer('http://localhost:5173', 1500);
         mainWindow.loadURL('http://localhost:5173');
         return;
       } catch (e) {
-        // Fallback a puerto 3001
+        // Fallback a puerto 3001 si vite dev server no está abierto
       }
     }
     mainWindow.loadURL(`http://localhost:${PORT}`);
   } catch (err) {
-    console.error('[Electron] Error conectando con el backend:', err);
+    console.error('[Electron] Error esperando backend:', err);
     mainWindow.loadURL(`http://localhost:${PORT}`);
   }
 }
 
-app.whenReady().then(() => {
-  startBackend();
-  createWindow();
+app.whenReady().then(async () => {
+  await startBackend();
+  await createWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -148,21 +147,7 @@ app.whenReady().then(() => {
   });
 });
 
-function cleanup() {
-  if (serverProcess) {
-    console.log('[Electron] Deteniendo backend...');
-    try {
-      serverProcess.kill();
-    } catch (e) {
-      // ignore
-    }
-    serverProcess = null;
-  }
-}
-
-app.on('before-quit', cleanup);
 app.on('window-all-closed', () => {
-  cleanup();
   if (process.platform !== 'darwin') {
     app.quit();
   }

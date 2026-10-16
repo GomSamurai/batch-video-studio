@@ -5,6 +5,10 @@ import { exec } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import { promisify } from 'util';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const execPromise = promisify(exec);
 const app = express();
@@ -82,7 +86,7 @@ async function checkFFmpeg() {
 checkFFmpeg();
 
 // Ensure temp_uploads folder exists
-const tempUploadsDir = path.join(process.cwd(), 'temp_uploads');
+const tempUploadsDir = path.join(BASE_STORAGE_DIR, 'temp_uploads');
 if (!fs.existsSync(tempUploadsDir)) {
   fs.mkdirSync(tempUploadsDir, { recursive: true });
 }
@@ -1312,9 +1316,10 @@ HASHTAGS: ${(copyData.hashtags || []).join(' ')}
 // Serve Static Vite Client in Production / Electron
 // -------------------------------------------------------------
 const candidateDistDirs = [
+  path.join(__dirname, 'dist'),
   path.join(process.cwd(), 'dist'),
-  path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1')), 'dist'),
   path.join(process.resourcesPath || '', 'app', 'dist'),
+  path.join(process.resourcesPath || '', 'app.asar', 'dist'),
   path.join(process.resourcesPath || '', 'dist')
 ];
 const productionDistDir = candidateDistDirs.find(d => fs.existsSync(path.join(d, 'index.html')));
@@ -1322,11 +1327,11 @@ const productionDistDir = candidateDistDirs.find(d => fs.existsSync(path.join(d,
 if (productionDistDir) {
   console.log(`📦 Sirviendo cliente estático desde: ${productionDistDir}`);
   app.use(express.static(productionDistDir));
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api') || req.path.startsWith('/stream')) {
-      return next();
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/stream')) {
+      return res.sendFile(path.join(productionDistDir, 'index.html'));
     }
-    res.sendFile(path.join(productionDistDir, 'index.html'));
+    next();
   });
 }
 
