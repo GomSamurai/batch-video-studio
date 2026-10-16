@@ -21,37 +21,77 @@ app.use(express.json({ limit: '50mb' }));
 // Configuration & Presets Storage (Portable & Desktop Aware)
 // -------------------------------------------------------------
 const BASE_STORAGE_DIR = process.env.APP_DATA_PATH || process.cwd();
+if (!fs.existsSync(BASE_STORAGE_DIR)) {
+  try { fs.mkdirSync(BASE_STORAGE_DIR, { recursive: true }); } catch (e) {}
+}
+
 const CONFIG_FILE = path.join(BASE_STORAGE_DIR, 'config.json');
 let config = {
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: 'gemini-3.8-flash',
 };
 
-if (fs.existsSync(CONFIG_FILE)) {
-  try {
-    const loadedConfig = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-    config = { ...config, ...loadedConfig };
-    // Ensure deprecated models are updated to gemini-3.8-flash
-    if (!config.geminiModel || config.geminiModel === 'gemini-2.5-flash') {
-      config.geminiModel = 'gemini-3.8-flash';
+// Check candidate config files across storage, workspace, and resources
+const candidateConfigFiles = [
+  CONFIG_FILE,
+  path.join(process.cwd(), 'config.json'),
+  'c:\\VSCODE\\fframes\\config.json',
+  path.join(__dirname, 'config.json'),
+  path.join(process.resourcesPath || '', 'app.asar.unpacked', 'config.json'),
+  path.join(process.resourcesPath || '', 'app', 'config.json'),
+  path.join(process.resourcesPath || '', 'config.json')
+];
+
+for (const cPath of candidateConfigFiles) {
+  if (fs.existsSync(cPath)) {
+    try {
+      const loadedConfig = JSON.parse(fs.readFileSync(cPath, 'utf-8'));
+      if (loadedConfig.geminiApiKey && !config.geminiApiKey) {
+        config.geminiApiKey = loadedConfig.geminiApiKey.trim();
+        console.log(`[Config] API Key de Gemini cargada desde ${cPath}`);
+      }
+      if (loadedConfig.geminiModel && (!config.geminiModel || config.geminiModel === 'gemini-2.5-flash')) {
+        config.geminiModel = loadedConfig.geminiModel === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : loadedConfig.geminiModel;
+      }
+    } catch (e) {
+      // ignore parse errors
     }
-  } catch (e) {
-    console.warn('⚠️ Error al leer config.json:', e.message);
   }
+}
+
+// Persist config to CONFIG_FILE if it exists and had an API key
+if (config.geminiApiKey && !fs.existsSync(CONFIG_FILE)) {
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    console.log(`[Config] Configuración inicial guardada en ${CONFIG_FILE}`);
+  } catch (e) {}
 }
 
 const PRESETS_FILE = path.join(BASE_STORAGE_DIR, 'presets.json');
 let presets = [];
-if (fs.existsSync(PRESETS_FILE)) {
-  try {
-    presets = JSON.parse(fs.readFileSync(PRESETS_FILE, 'utf-8'));
-  } catch (e) {
-    presets = [];
+const candidatePresetFiles = [
+  PRESETS_FILE,
+  path.join(process.cwd(), 'presets.json'),
+  'c:\\VSCODE\\fframes\\presets.json',
+  path.join(__dirname, 'presets.json'),
+  path.join(process.resourcesPath || '', 'app.asar.unpacked', 'presets.json'),
+  path.join(process.resourcesPath || '', 'presets.json')
+];
+
+for (const pPath of candidatePresetFiles) {
+  if (fs.existsSync(pPath)) {
+    try {
+      const loadedPresets = JSON.parse(fs.readFileSync(pPath, 'utf-8'));
+      if (Array.isArray(loadedPresets) && loadedPresets.length > 0) {
+        presets = loadedPresets;
+        break;
+      }
+    } catch (e) {}
   }
 }
 
 // -------------------------------------------------------------
-// FFmpeg Binary Resolution (System PATH or Portable bin/ folder)
+// FFmpeg & FFprobe Binary Resolution (System PATH or Portable bin/ folder)
 // -------------------------------------------------------------
 let ffmpegCmd = 'ffmpeg';
 function resolveFfmpegCommand() {
@@ -59,7 +99,8 @@ function resolveFfmpegCommand() {
     path.join(process.cwd(), 'bin', 'ffmpeg.exe'),
     path.join(path.dirname(process.execPath || ''), 'bin', 'ffmpeg.exe'),
     path.join(process.resourcesPath || '', 'bin', 'ffmpeg.exe'),
-    path.join(process.resourcesPath || '', 'ffmpeg.exe')
+    path.join(process.resourcesPath || '', 'ffmpeg.exe'),
+    'C:\\ffmpeg\\bin\\ffmpeg.exe'
   ];
   for (const p of possiblePaths) {
     if (fs.existsSync(p)) {
@@ -68,8 +109,25 @@ function resolveFfmpegCommand() {
   }
   return 'ffmpeg';
 }
-
 ffmpegCmd = resolveFfmpegCommand();
+
+let ffprobeCmd = 'ffprobe';
+function resolveFfprobeCommand() {
+  const possiblePaths = [
+    path.join(process.cwd(), 'bin', 'ffprobe.exe'),
+    path.join(path.dirname(process.execPath || ''), 'bin', 'ffprobe.exe'),
+    path.join(process.resourcesPath || '', 'bin', 'ffprobe.exe'),
+    path.join(process.resourcesPath || '', 'ffprobe.exe'),
+    'C:\\ffmpeg\\bin\\ffprobe.exe'
+  ];
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p)) {
+      return `"${p}"`;
+    }
+  }
+  return 'ffprobe';
+}
+ffprobeCmd = resolveFfprobeCommand();
 
 // Check FFmpeg availability
 let ffmpegAvailable = false;
@@ -85,10 +143,33 @@ async function checkFFmpeg() {
 }
 checkFFmpeg();
 
-// Ensure temp_uploads folder exists
+// Safe Default Output Directory Resolver (never write to read-only Program Files)
+function getDefaultOutputDir() {
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    return path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'PROCESADOS');
+  }
+  const localDir = path.join(process.cwd(), 'PROCESADOS');
+  try {
+    if (!fs.existsSync(localDir)) fs.mkdirSync(localDir, { recursive: true });
+    const testFile = path.join(localDir, `.write_test_${Date.now()}`);
+    fs.writeFileSync(testFile, 'test');
+    fs.unlinkSync(testFile);
+    return localDir;
+  } catch (e) {
+    const userDir = path.join(process.env.USERPROFILE || 'C:\\', 'Videos', 'BatchVideoStudio');
+    if (!fs.existsSync(userDir)) {
+      try { fs.mkdirSync(userDir, { recursive: true }); } catch (err) {}
+    }
+    return userDir;
+  }
+}
+
+// Ensure temp_uploads folder exists in writable data directory
 const tempUploadsDir = path.join(BASE_STORAGE_DIR, 'temp_uploads');
 if (!fs.existsSync(tempUploadsDir)) {
-  fs.mkdirSync(tempUploadsDir, { recursive: true });
+  try {
+    fs.mkdirSync(tempUploadsDir, { recursive: true });
+  } catch (e) {}
 }
 
 // -------------------------------------------------------------
@@ -97,7 +178,7 @@ if (!fs.existsSync(tempUploadsDir)) {
 async function probeVideoInfo(videoPath) {
   try {
     const { stdout } = await execPromise(
-      `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration,r_frame_rate -of json "${videoPath}"`
+      `${ffprobeCmd} -v error -select_streams v:0 -show_entries stream=width,height,duration,r_frame_rate -of json "${videoPath}"`
     );
     const data = JSON.parse(stdout);
     const stream = (data.streams && data.streams[0]) ? data.streams[0] : {};
@@ -105,7 +186,7 @@ async function probeVideoInfo(videoPath) {
     let duration = parseFloat(stream.duration);
     if (!duration || isNaN(duration)) {
       const { stdout: fmtOut } = await execPromise(
-        `ffprobe -v error -show_entries format=duration -of json "${videoPath}"`
+        `${ffprobeCmd} -v error -show_entries format=duration -of json "${videoPath}"`
       );
       const fmtData = JSON.parse(fmtOut);
       duration = parseFloat(fmtData.format && fmtData.format.duration) || 30;
@@ -117,7 +198,7 @@ async function probeVideoInfo(videoPath) {
     let hasAudio = false;
     try {
       const { stdout: aOut } = await execPromise(
-        `ffprobe -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "${videoPath}"`
+        `${ffprobeCmd} -v error -select_streams a -show_entries stream=codec_name -of csv=p=0 "${videoPath}"`
       );
       hasAudio = aOut.trim().length > 0;
     } catch (e) {
@@ -143,7 +224,7 @@ async function detectBlackAndSilence(videoPath, duration) {
   try {
     const probeDur = Math.min(10, duration);
     const { stderr: blackOut } = await execPromise(
-      `ffmpeg -i "${videoPath}" -t ${probeDur} -vf "blackdetect=d=0.2:pic_th=0.95" -f null - 2>&1`
+      `${ffmpegCmd} -i "${videoPath}" -t ${probeDur} -vf "blackdetect=d=0.2:pic_th=0.95" -f null - 2>&1`
     ).catch(e => ({ stderr: e.message || '' }));
 
     const blackMatches = [...blackOut.matchAll(/black_start:([0-9.]+)\s+black_end:([0-9.]+)/g)];
@@ -160,7 +241,7 @@ async function detectBlackAndSilence(videoPath, duration) {
 
   try {
     const { stderr: silenceOut } = await execPromise(
-      `ffmpeg -i "${videoPath}" -t 8 -af "silencedetect=noise=-35dB:d=0.4" -f null - 2>&1`
+      `${ffmpegCmd} -i "${videoPath}" -t 8 -af "silencedetect=noise=-35dB:d=0.4" -f null - 2>&1`
     ).catch(e => ({ stderr: e.message || '' }));
 
     const silenceMatches = [...silenceOut.matchAll(/silence_end:\s*([0-9.]+)/g)];
@@ -180,7 +261,10 @@ async function detectBlackAndSilence(videoPath, duration) {
 // Dense keyframe extraction for accurate temporal vision & OCR
 async function extractKeyframes(videoPath, duration, count = 12) {
   const frames = [];
-  const tempDir = path.join(process.cwd(), 'temp_uploads');
+  const tempDir = tempUploadsDir;
+  if (!fs.existsSync(tempDir)) {
+    try { fs.mkdirSync(tempDir, { recursive: true }); } catch (e) {}
+  }
   const safeId = Date.now() + '_' + Math.floor(Math.random() * 1000);
 
   // Dense strategic sampling across intro, core content, and outro
@@ -207,7 +291,7 @@ async function extractKeyframes(videoPath, duration, count = 12) {
     const framePath = path.join(tempDir, `kf_${safeId}_${idx}.jpg`);
     try {
       await execPromise(
-        `ffmpeg -y -ss ${sec.toFixed(2)} -i "${videoPath}" -vframes 1 -vf "scale=720:-1" -q:v 3 "${framePath}"`
+        `${ffmpegCmd} -y -ss ${sec.toFixed(2)} -i "${videoPath}" -vframes 1 -vf "scale=720:-1" -q:v 3 "${framePath}"`
       );
       if (fs.existsSync(framePath)) {
         const base64Data = fs.readFileSync(framePath).toString('base64');
@@ -678,7 +762,7 @@ app.get('/api/thumbnail', async (req, res) => {
     const thumbPath = path.join(tempUploadsDir, `thumb_${hash}.jpg`);
 
     if (!fs.existsSync(thumbPath)) {
-      await execPromise(`ffmpeg -y -ss 1.0 -i "${videoPath}" -vframes 1 -vf "scale=360:-1" -q:v 3 "${thumbPath}"`);
+      await execPromise(`${ffmpegCmd} -y -ss 1.0 -i "${videoPath}" -vframes 1 -vf "scale=360:-1" -q:v 3 "${thumbPath}"`);
     }
 
     if (fs.existsSync(thumbPath)) {
@@ -831,9 +915,13 @@ app.post('/api/batch/start', async (req, res) => {
     return res.status(400).json({ error: 'No se enviaron vídeos para procesar.' });
   }
 
-  const destinationFolder = outputDir || path.join(process.cwd(), 'PROCESADOS');
+  const destinationFolder = outputDir || getDefaultOutputDir();
   if (!fs.existsSync(destinationFolder)) {
-    fs.mkdirSync(destinationFolder, { recursive: true });
+    try {
+      fs.mkdirSync(destinationFolder, { recursive: true });
+    } catch (e) {
+      console.warn('No se pudo crear carpeta de salida principal:', e.message);
+    }
   }
 
   res.json({
@@ -1050,19 +1138,25 @@ app.post('/api/batch/start', async (req, res) => {
           let currentVLabel = `${mainInputIdx}:v`;
           let currentALabel = `${mainInputIdx}:a`;
 
+          // Check if this video should be exported without audio (muted)
+          const videoAudioMuted = video.muteAudio !== undefined 
+            ? !!video.muteAudio 
+            : (options.includeAudio === false || options.muteAudio === true);
+          const hasAudioActive = mainInfo.hasAudio && !videoAudioMuted;
+
           if (hasMultiSegments) {
             for (let sIdx = 0; sIdx < keptIntervals.length; sIdx++) {
               const seg = keptIntervals[sIdx];
               filterChains.push(
                 `[${mainInputIdx}:v]trim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(3)},setpts=PTS-STARTPTS[v_seg_${sIdx}]`
               );
-              if (mainInfo.hasAudio) {
+              if (hasAudioActive) {
                 filterChains.push(
                   `[${mainInputIdx}:a]atrim=start=${seg.start.toFixed(3)}:end=${seg.end.toFixed(3)},asetpts=PTS-STARTPTS[a_seg_${sIdx}]`
                 );
               }
             }
-            if (mainInfo.hasAudio) {
+            if (hasAudioActive) {
               const concatStreams = keptIntervals.map((_, sIdx) => `[v_seg_${sIdx}][a_seg_${sIdx}]`).join('');
               filterChains.push(`${concatStreams}concat=n=${keptIntervals.length}:v=1:a=1[v_trimmed][a_trimmed]`);
               currentVLabel = 'v_trimmed';
@@ -1130,17 +1224,17 @@ app.post('/api/batch/start', async (req, res) => {
 
           filterChains.push(`[${currentVLabel}]setsar=1,format=yuv420p[v_out]`);
 
-          const audioFilters = [];
-          if (Math.abs(effectiveSpeed - 1.0) >= 0.01) {
-            const atempoStr = buildAtempoFilter(effectiveSpeed);
-            if (atempoStr) audioFilters.push(atempoStr);
-          }
-          if (options.normalizeAudio) {
-            audioFilters.push("loudnorm=I=-16:LRA=11:TP=-1.5");
-          }
-
           let audioMapArg = '';
-          if (mainInfo.hasAudio) {
+          if (hasAudioActive) {
+            const audioFilters = [];
+            if (Math.abs(effectiveSpeed - 1.0) >= 0.01) {
+              const atempoStr = buildAtempoFilter(effectiveSpeed);
+              if (atempoStr) audioFilters.push(atempoStr);
+            }
+            if (options.normalizeAudio) {
+              audioFilters.push("loudnorm=I=-16:LRA=11:TP=-1.5");
+            }
+
             if (audioFilters.length > 0) {
               filterChains.push(`[${currentALabel}]${audioFilters.join(',')}[a_out]`);
               audioMapArg = '-map "[a_out]" -c:a aac -b:a 192k';
@@ -1187,26 +1281,35 @@ app.post('/api/batch/start', async (req, res) => {
 
             for (let cIdx = 0; cIdx < concatParts.length; cIdx++) {
               const part = concatParts[cIdx];
-              const pInfo = await probeVideoInfo(part.path);
               concatInputs.push(`-i "${part.path}"`);
 
               concatFilters.push(
                 `[${cIdx}:v]scale=${targetW}:${targetH}:force_original_aspect_ratio=decrease,pad=${targetW}:${targetH}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=30,format=yuv420p[cv${cIdx}]`
               );
 
-              if (pInfo.hasAudio) {
-                concatFilters.push(`[${cIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo[ca${cIdx}]`);
-              } else {
-                concatFilters.push(`anullsrc=channel_layout=stereo:sample_rate=44100:d=${pInfo.duration.toFixed(2)}[ca${cIdx}]`);
+              if (hasAudioActive) {
+                const pInfo = await probeVideoInfo(part.path);
+                if (pInfo.hasAudio) {
+                  concatFilters.push(`[${cIdx}:a]aformat=sample_rates=44100:channel_layouts=stereo[ca${cIdx}]`);
+                } else {
+                  concatFilters.push(`anullsrc=channel_layout=stereo:sample_rate=44100:d=${pInfo.duration.toFixed(2)}[ca${cIdx}]`);
+                }
               }
             }
 
-            const concatStreams = concatParts.map((_, cIdx) => `[cv${cIdx}][ca${cIdx}]`).join('');
-            concatFilters.push(`${concatStreams}concat=n=${concatParts.length}:v=1:a=1[concat_v][concat_a]`);
-
-            const concatCmd = `${ffmpegCmd} -y ${concatInputs.join(' ')} -filter_complex "${concatFilters.join(';')}" -map "[concat_v]" -map "[concat_a]" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k "${outputPath}"`;
-            console.log(`▶ Concatena Intro/Outro: ${concatCmd}`);
-            await execPromise(concatCmd);
+            if (hasAudioActive) {
+              const concatStreams = concatParts.map((_, cIdx) => `[cv${cIdx}][ca${cIdx}]`).join('');
+              concatFilters.push(`${concatStreams}concat=n=${concatParts.length}:v=1:a=1[concat_v][concat_a]`);
+              const concatCmd = `${ffmpegCmd} -y ${concatInputs.join(' ')} -filter_complex "${concatFilters.join(';')}" -map "[concat_v]" -map "[concat_a]" -c:v libx264 -preset fast -crf 22 -c:a aac -b:a 192k "${outputPath}"`;
+              console.log(`▶ Concatena Intro/Outro: ${concatCmd}`);
+              await execPromise(concatCmd);
+            } else {
+              const concatStreams = concatParts.map((_, cIdx) => `[cv${cIdx}]`).join('');
+              concatFilters.push(`${concatStreams}concat=n=${concatParts.length}:v=1:a=0[concat_v]`);
+              const concatCmd = `${ffmpegCmd} -y ${concatInputs.join(' ')} -filter_complex "${concatFilters.join(';')}" -map "[concat_v]" -an -c:v libx264 -preset fast -crf 22 "${outputPath}"`;
+              console.log(`▶ Concatena Intro/Outro (Mudo): ${concatCmd}`);
+              await execPromise(concatCmd);
+            }
 
             if (tempMainPath && fs.existsSync(tempMainPath)) {
               fs.unlinkSync(tempMainPath);

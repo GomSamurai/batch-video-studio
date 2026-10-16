@@ -31,7 +31,8 @@
       "server.js",
       "electron/**/*",
       "package.json",
-      "presets.json"
+      "presets.json",
+      "config.json"
     ],
     "asarUnpack": [
       "server.js"

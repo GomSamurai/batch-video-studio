@@ -3,7 +3,7 @@ import {
   Folder, Sparkles, Settings, Play, CheckCircle2, 
   FileText, Wand2, RefreshCw, Copy, Layers, Eye,
   Zap, Clock, Sliders, Check, Trash2, Plus, UploadCloud,
-  FolderOpen, X, Volume2, Film, ArrowUp, Download, Gauge,
+  FolderOpen, X, Volume2, VolumeX, Film, ArrowUp, Download, Gauge,
   Key, HelpCircle, ExternalLink, ShieldCheck, CheckCheck, 
   AlertCircle, FolderCheck, Scissors, ChevronLeft, ChevronRight,
   Maximize2, Crosshair, Move, Search, Filter, Smartphone, Monitor, Square,
@@ -115,6 +115,7 @@ export default function App() {
     watermarkY: 88, // 0 to 100%
     watermarkOpacity: 0.85,
     watermarkScale: 0.15,
+    includeAudio: true, // Master audio switch: true = include audio, false = export muted
     normalizeAudio: true,
     
     // Automatic Real AI Vision Rules for trimming
@@ -237,6 +238,24 @@ export default function App() {
       const res = await fetch('http://localhost:3001/api/config');
       const data = await res.json();
       setConfigData(data);
+      if (!data.isConfigured) {
+        const cachedKey = localStorage.getItem('batch_studio_gemini_key');
+        if (cachedKey) {
+          const autoRes = await fetch('http://localhost:3001/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              geminiApiKey: cachedKey.trim(),
+              geminiModel: data.geminiModel || 'gemini-3.8-flash'
+            })
+          });
+          const autoData = await autoRes.json();
+          if (autoData.isConfigured) {
+            setConfigData(autoData);
+            setBackendStatus(prev => ({ ...prev, hasGeminiKey: true }));
+          }
+        }
+      }
     } catch (err) {
       console.error('Error cargando config:', err);
     }
@@ -244,16 +263,20 @@ export default function App() {
 
   const saveConfig = async () => {
     try {
+      const trimmedKey = apiKeyInput.trim();
       const res = await fetch('http://localhost:3001/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          geminiApiKey: apiKeyInput,
+          geminiApiKey: trimmedKey,
           geminiModel: configData.geminiModel || 'gemini-3.8-flash'
         })
       });
       const data = await res.json();
       if (data.success) {
+        if (trimmedKey) {
+          localStorage.setItem('batch_studio_gemini_key', trimmedKey);
+        }
         setConfigData(data);
         setBackendStatus(prev => ({ ...prev, hasGeminiKey: data.isConfigured }));
         setConfigSaveMsg('✅ API Key guardada con éxito.');
@@ -265,6 +288,22 @@ export default function App() {
     } catch (err) {
       setConfigSaveMsg('❌ Error al guardar: ' + err.message);
     }
+  };
+
+  const toggleVideoAudio = (videoIndex) => {
+    setBatchVideos(prev => {
+      const updated = [...prev];
+      const target = updated[videoIndex];
+      if (!target) return prev;
+      const currentIsMuted = target.muteAudio !== undefined 
+        ? target.muteAudio 
+        : (options.includeAudio === false);
+      updated[videoIndex] = {
+        ...target,
+        muteAudio: !currentIsMuted
+      };
+      return updated;
+    });
   };
 
   const browseDirectory = async (pathTarget) => {
@@ -1067,9 +1106,26 @@ export default function App() {
                     <p style={{ fontSize: '0.76rem', color: 'var(--text-sub)' }}>Ajusta cada vídeo visualmente, define recortes o elimina tramos</p>
                   </div>
                   {batchVideos.length > 0 && (
-                    <button className="btn-outline" style={{ color: 'var(--accent-rose)', padding: '5px 10px', fontSize: '0.74rem' }} onClick={clearBatch}>
-                      <Trash2 size={13} /> Vaciar
-                    </button>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button 
+                        className="btn-outline" 
+                        style={{ 
+                          padding: '5px 10px', 
+                          fontSize: '0.74rem', 
+                          color: options.includeAudio === false ? '#fda4af' : 'var(--accent-cyan)',
+                          borderColor: options.includeAudio === false ? 'rgba(244,63,94,0.35)' : 'rgba(0,242,254,0.3)',
+                          background: options.includeAudio === false ? 'rgba(244,63,94,0.1)' : 'rgba(0,242,254,0.06)'
+                        }} 
+                        onClick={() => setOptions(prev => ({ ...prev, includeAudio: !prev.includeAudio }))}
+                        title="Alternar inclusión de sonido para todo el lote"
+                      >
+                        {options.includeAudio === false ? <VolumeX size={13} /> : <Volume2 size={13} />}
+                        {options.includeAudio === false ? 'Lote: Mudo' : 'Lote: Con Audio'}
+                      </button>
+                      <button className="btn-outline" style={{ color: 'var(--accent-rose)', padding: '5px 10px', fontSize: '0.74rem' }} onClick={clearBatch}>
+                        <Trash2 size={13} /> Vaciar
+                      </button>
+                    </div>
                   )}
                 </div>
 
@@ -1111,6 +1167,7 @@ export default function App() {
                       const hasCuts = v.customCuts && (v.customCuts.introCutTime > 0 || v.customCuts.outroCutTime > 0);
                       const hasSegments = v.customCuts?.deletedSegments && v.customCuts.deletedSegments.length > 0;
                       const originalIdx = batchVideos.indexOf(v);
+                      const isVideoMuted = v.muteAudio !== undefined ? !!v.muteAudio : (options.includeAudio === false);
 
                       return (
                         <div key={v.path + idx} className="video-card-cine">
@@ -1154,11 +1211,33 @@ export default function App() {
                                   🚀 {v.customCuts.speed}x
                                 </span>
                               )}
+                              {isVideoMuted ? (
+                                <span className="badge-pill" style={{ fontSize: '0.64rem', padding: '1px 6px', background: 'rgba(244,63,94,0.15)', color: '#fda4af', border: '1px solid rgba(244,63,94,0.3)' }} title="Pista de audio silenciada en este vídeo">
+                                  🔇 Mudo
+                                </span>
+                              ) : (
+                                <span className="badge-pill" style={{ fontSize: '0.64rem', padding: '1px 6px', background: 'rgba(0,242,254,0.08)', color: 'var(--accent-cyan)', border: '1px solid rgba(0,242,254,0.25)' }} title="Pista de audio activa">
+                                  🔊 Audio
+                                </span>
+                              )}
                             </div>
                           </div>
 
                           {/* Action Buttons (Strictly Right Aligned, Never Cut Off) */}
                           <div className="video-card-cine-actions">
+                            <button 
+                              className="btn-outline" 
+                              style={{ 
+                                padding: '6px 8px', 
+                                color: isVideoMuted ? '#fda4af' : 'var(--accent-cyan)',
+                                background: isVideoMuted ? 'rgba(244,63,94,0.12)' : 'rgba(0,242,254,0.06)',
+                                borderColor: isVideoMuted ? 'rgba(244,63,94,0.35)' : 'rgba(0,242,254,0.25)'
+                              }} 
+                              onClick={() => toggleVideoAudio(originalIdx)}
+                              title={isVideoMuted ? "Audio silenciado en este vídeo (Clic para activar sonido)" : "Audio activo en este vídeo (Clic para silenciar)"}
+                            >
+                              {isVideoMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                            </button>
                             <button 
                               className="btn-outline" 
                               style={{ 
@@ -1638,19 +1717,60 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Audio Normalization Check */}
-                  <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid var(--border-glass)', cursor: 'pointer', marginTop: '12px' }}>
+                </div>
+
+                {/* 3. Audio & Sound Export Controls */}
+                <div className="glass-card" style={{ padding: '18px' }}>
+                  <h3 style={{ fontSize: '0.94rem', fontWeight: 700, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {options.includeAudio !== false ? <Volume2 size={17} color="var(--accent-cyan)" /> : <VolumeX size={17} color="var(--accent-rose)" />}
+                    Pista de Audio & Sonido de Exportación
+                  </h3>
+
+                  {/* Master Audio Toggle */}
+                  <label style={{ 
+                    display: 'flex', 
+                    justifyContent: 'space-between', 
+                    alignItems: 'center', 
+                    padding: '12px 14px', 
+                    background: options.includeAudio !== false ? 'rgba(0,242,254,0.04)' : 'rgba(244,63,94,0.07)', 
+                    borderRadius: '8px', 
+                    border: options.includeAudio !== false ? '1px solid rgba(0,242,254,0.2)' : '1px solid rgba(244,63,94,0.3)', 
+                    cursor: 'pointer',
+                    marginBottom: options.includeAudio !== false ? '10px' : '0px'
+                  }}>
                     <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.82rem' }}>Normalización de Audio EBU R128 (-16 LUFS)</div>
-                      <div style={{ fontSize: '0.7rem', color: 'var(--text-sub)' }}>Estandariza volumen para que no suene saturado ni bajo</div>
+                      <div style={{ fontWeight: 700, fontSize: '0.86rem', color: options.includeAudio !== false ? '#fff' : '#fda4af', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {options.includeAudio !== false ? '🔊 Exportar Vídeos con Pista de Audio' : '🔇 Exportar Vídeos Silenciados (Mudos)'}
+                      </div>
+                      <div style={{ fontSize: '0.73rem', color: 'var(--text-sub)', marginTop: '2px' }}>
+                        {options.includeAudio !== false 
+                          ? 'Los vídeos conservarán su sonido y música. Puedes silenciar vídeos individuales en la lista del Paso 1.' 
+                          : 'Todos los vídeos del lote se exportarán sin sonido (-an). Puedes reactivar audio en vídeos específicos en el Paso 1.'}
+                      </div>
                     </div>
                     <input 
                       type="checkbox" 
-                      checked={options.normalizeAudio} 
-                      onChange={e => setOptions({ ...options, normalizeAudio: e.target.checked })} 
+                      checked={options.includeAudio !== false} 
+                      onChange={e => setOptions({ ...options, includeAudio: e.target.checked })}
                       style={{ width: '18px', height: '18px', cursor: 'pointer' }}
                     />
                   </label>
+
+                  {/* Audio Normalization Check (Only shown if audio is enabled) */}
+                  {options.includeAudio !== false && (
+                    <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 12px', background: 'rgba(255,255,255,0.02)', borderRadius: '8px', border: '1px solid var(--border-glass)', cursor: 'pointer' }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: '0.82rem' }}>Normalización de Audio EBU R128 (-16 LUFS)</div>
+                        <div style={{ fontSize: '0.7rem', color: 'var(--text-sub)' }}>Estandariza volumen para que no suene saturado ni bajo</div>
+                      </div>
+                      <input 
+                        type="checkbox" 
+                        checked={options.normalizeAudio} 
+                        onChange={e => setOptions({ ...options, normalizeAudio: e.target.checked })} 
+                        style={{ width: '18px', height: '18px', cursor: 'pointer' }}
+                      />
+                    </label>
+                  )}
                 </div>
 
                 {/* 3. Global Trimming & Renaming Pattern */}
@@ -2357,7 +2477,7 @@ export default function App() {
             )}
 
             {/* Numerical Fine-tune Inputs */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', marginBottom: '16px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px', marginBottom: '16px' }}>
               <div>
                 <label style={{ fontSize: '0.7rem', color: 'var(--text-sub)', display: 'block', marginBottom: '3px' }}>Recorte de Inicio (segundos)</label>
                 <input 
@@ -2398,6 +2518,35 @@ export default function App() {
                   <option value="1.25">1.25x</option>
                   <option value="1.5">1.5x</option>
                   <option value="2.0">2.0x (Acelerado)</option>
+                </select>
+              </div>
+
+              <div>
+                <label style={{ fontSize: '0.7rem', color: 'var(--text-sub)', display: 'block', marginBottom: '3px' }}>Pista de Audio / Sonido</label>
+                <select 
+                  className="input-field"
+                  value={currentTrimmerVideo.muteAudio !== undefined ? (currentTrimmerVideo.muteAudio ? 'muted' : 'sound') : 'default'}
+                  onChange={e => {
+                    const val = e.target.value;
+                    setBatchVideos(prev => {
+                      const updated = [...prev];
+                      if (updated[trimmerIndex]) {
+                        updated[trimmerIndex] = {
+                          ...updated[trimmerIndex],
+                          muteAudio: val === 'default' ? undefined : val === 'muted'
+                        };
+                      }
+                      return updated;
+                    });
+                  }}
+                  style={{ 
+                    fontWeight: 600,
+                    color: (currentTrimmerVideo.muteAudio !== undefined ? currentTrimmerVideo.muteAudio : options.includeAudio === false) ? '#fda4af' : 'var(--accent-cyan)'
+                  }}
+                >
+                  <option value="default">Por defecto ({options.includeAudio !== false ? '🔊 Con Audio' : '🔇 Mudo'})</option>
+                  <option value="sound">🔊 Conservar Sonido</option>
+                  <option value="muted">🔇 Silenciar Vídeo (Mudo)</option>
                 </select>
               </div>
             </div>

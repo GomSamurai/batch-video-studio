@@ -22,6 +22,55 @@ if (!fs.existsSync(baseDataDir)) {
   }
 }
 
+// Auto-seed config.json if not present in baseDataDir
+const targetConfigFile = path.join(baseDataDir, 'config.json');
+if (!fs.existsSync(targetConfigFile)) {
+  const seedCandidates = [
+    path.join(__dirname, '..', 'config.json'),
+    path.join(process.resourcesPath || '', 'config.json'),
+    path.join(process.resourcesPath || '', 'app.asar.unpacked', 'config.json'),
+    path.join(process.resourcesPath || '', 'app', 'config.json'),
+    'c:\\VSCODE\\fframes\\config.json'
+  ];
+  for (const c of seedCandidates) {
+    if (fs.existsSync(c)) {
+      try {
+        fs.copyFileSync(c, targetConfigFile);
+        console.log('[Electron] config.json inicial migrado a:', targetConfigFile);
+        break;
+      } catch (e) {}
+    }
+  }
+}
+
+// Auto-seed presets.json if not present in baseDataDir
+const targetPresetsFile = path.join(baseDataDir, 'presets.json');
+if (!fs.existsSync(targetPresetsFile)) {
+  const seedPresets = [
+    path.join(__dirname, '..', 'presets.json'),
+    path.join(process.resourcesPath || '', 'presets.json'),
+    path.join(process.resourcesPath || '', 'app.asar.unpacked', 'presets.json'),
+    path.join(process.resourcesPath || '', 'app', 'presets.json'),
+    'c:\\VSCODE\\fframes\\presets.json'
+  ];
+  for (const p of seedPresets) {
+    if (fs.existsSync(p)) {
+      try {
+        fs.copyFileSync(p, targetPresetsFile);
+        break;
+      } catch (e) {}
+    }
+  }
+}
+
+// Ensure temp_uploads folder exists in writable data directory
+const tempUploads = path.join(baseDataDir, 'temp_uploads');
+if (!fs.existsSync(tempUploads)) {
+  try {
+    fs.mkdirSync(tempUploads, { recursive: true });
+  } catch (e) {}
+}
+
 process.env.APP_DATA_PATH = baseDataDir;
 
 async function startBackend() {
