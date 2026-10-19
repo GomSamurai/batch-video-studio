@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
-  Folder, Sparkles, Settings, Play, CheckCircle2, 
+  Folder, Sparkles, Settings, Play, Pause, CheckCircle2, 
   FileText, Wand2, RefreshCw, Copy, Layers, Eye,
   Zap, Clock, Sliders, Check, Trash2, Plus, UploadCloud,
   FolderOpen, X, Volume2, VolumeX, Film, ArrowUp, Download, Gauge,
@@ -9,6 +9,7 @@ import {
   Maximize2, Crosshair, Move, Search, Filter, Smartphone, Monitor, Square,
   RotateCcw, Hash, Type, ArrowRight, ArrowLeft, Palette
 } from 'lucide-react';
+
 
 const THEMES = [
   { id: 'cyber-cyan', name: 'Cyber Cyan', dot: '#00F2FE' },
@@ -73,6 +74,12 @@ export default function App() {
   const [trimmerPlaying, setTrimmerPlaying] = useState(false);
   const [trimmerAiLoading, setTrimmerAiLoading] = useState(false);
   const [trimmerAiInfo, setTrimmerAiInfo] = useState(null);
+  const [trimmerFilmstrip, setTrimmerFilmstrip] = useState([]);
+  const [trimmerFilmstripLoading, setTrimmerFilmstripLoading] = useState(false);
+  const [trimmerHoverTime, setTrimmerHoverTime] = useState(null);
+  const [trimmerHoverX, setTrimmerHoverX] = useState(null);
+  const blobUrlCache = useRef(new Map());
+
 
   // Custom Cut Segments Drafting State
   const [segMarkIn, setSegMarkIn] = useState(null);
@@ -264,13 +271,16 @@ export default function App() {
   const saveConfig = async () => {
     try {
       const trimmedKey = apiKeyInput.trim();
+      const payload = {
+        geminiModel: configData.geminiModel || 'gemini-3.8-flash'
+      };
+      if (trimmedKey) {
+        payload.geminiApiKey = trimmedKey;
+      }
       const res = await fetch('http://localhost:3001/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          geminiApiKey: trimmedKey,
-          geminiModel: configData.geminiModel || 'gemini-3.8-flash'
-        })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (data.success) {
@@ -279,16 +289,36 @@ export default function App() {
         }
         setConfigData(data);
         setBackendStatus(prev => ({ ...prev, hasGeminiKey: data.isConfigured }));
-        setConfigSaveMsg('✅ API Key guardada con éxito.');
+        setApiKeyInput('');
+        setConfigSaveMsg('✅ Configuración guardada con éxito.');
         setTimeout(() => {
           setConfigSaveMsg(null);
           setShowConfigModal(false);
-        }, 1500);
+        }, 1200);
       }
     } catch (err) {
       setConfigSaveMsg('❌ Error al guardar: ' + err.message);
     }
   };
+
+  const clearApiKey = async () => {
+    if (!window.confirm('¿Seguro que deseas eliminar la API Key de Gemini configurada?')) return;
+    try {
+      const res = await fetch('http://localhost:3001/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ geminiApiKey: '__CLEAR__' })
+      });
+      const data = await res.json();
+      localStorage.removeItem('batch_studio_gemini_key');
+      setConfigData(data);
+      setBackendStatus(prev => ({ ...prev, hasGeminiKey: false }));
+      setConfigSaveMsg('🗑️ API Key eliminada.');
+    } catch (err) {
+      setConfigSaveMsg('❌ Error: ' + err.message);
+    }
+  };
+
 
   const toggleVideoAudio = (videoIndex) => {
     setBatchVideos(prev => {
@@ -515,13 +545,18 @@ export default function App() {
     setTrimmerIndex(null);
   };
 
-  const getVideoSourceUrl = (video) => {
+  const getVideoSourceUrl = useCallback((video) => {
     if (!video) return '';
     if (video.fileObj) {
-      return URL.createObjectURL(video.fileObj);
+      if (!blobUrlCache.current.has(video.fileObj)) {
+        blobUrlCache.current.set(video.fileObj, URL.createObjectURL(video.fileObj));
+      }
+      return blobUrlCache.current.get(video.fileObj);
     }
-    return `http://localhost:3001/api/video-stream?path=${encodeURIComponent(video.path)}`;
-  };
+    const p = video.path || video.name;
+    return `http://localhost:3001/api/video-stream?path=${encodeURIComponent(p)}`;
+  }, []);
+
 
   const getVideoThumbnailUrl = (video) => {
     if (!video || !video.path) return '';
@@ -586,6 +621,38 @@ export default function App() {
   // -------------------------------------------------------------
   // Quick Trim Studio Methods (NLE Timeline & Custom Cut Segments)
   // -------------------------------------------------------------
+  const loadFilmstripForVideo = async (video) => {
+    if (!video) return;
+    setTrimmerFilmstripLoading(true);
+    setTrimmerFilmstrip([]);
+    try {
+      let targetPath = video.path || video.name;
+      if (video.fileObj && (!video.path || video.path === video.name)) {
+        const up = await uploadFileLocally(video.fileObj, video.name);
+        if (up) targetPath = up;
+      }
+      const res = await fetch(`http://localhost:3001/api/video-filmstrip?path=${encodeURIComponent(targetPath)}&count=10`);
+      const data = await res.json();
+      if (data.frames && Array.isArray(data.frames)) {
+        setTrimmerFilmstrip(data.frames);
+      }
+    } catch (e) {
+      console.warn('Filmstrip fetch warning:', e.message);
+    } finally {
+      setTrimmerFilmstripLoading(false);
+    }
+  };
+
+  const toggleTrimmerPlay = () => {
+    if (!trimmerVideoRef.current) return;
+    if (trimmerVideoRef.current.paused) {
+      trimmerVideoRef.current.play().then(() => setTrimmerPlaying(true)).catch(() => {});
+    } else {
+      trimmerVideoRef.current.pause();
+      setTrimmerPlaying(false);
+    }
+  };
+
   const openTrimmer = (idx) => {
     setTrimmerIndex(idx);
     setTrimmerAiInfo(null);
@@ -593,6 +660,9 @@ export default function App() {
     setTrimmerPlaying(false);
     setSegMarkIn(null);
     setSegMarkOut(null);
+    if (batchVideos[idx]) {
+      loadFilmstripForVideo(batchVideos[idx]);
+    }
   };
 
   const closeTrimmer = () => {
@@ -602,7 +672,47 @@ export default function App() {
     setTrimmerPlaying(false);
     setSegMarkIn(null);
     setSegMarkOut(null);
+    setTrimmerFilmstrip([]);
+    setTrimmerHoverTime(null);
+    setTrimmerHoverX(null);
   };
+
+  useEffect(() => {
+    if (trimmerIndex !== null && batchVideos[trimmerIndex]) {
+      loadFilmstripForVideo(batchVideos[trimmerIndex]);
+    }
+  }, [trimmerIndex]);
+
+  useEffect(() => {
+    if (trimmerIndex === null) return;
+    const handleKeyDown = (e) => {
+      if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        toggleTrimmerPlay();
+      } else if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        stepVideoTime(e.shiftKey ? -1.0 : -0.1);
+      } else if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        stepVideoTime(e.shiftKey ? 1.0 : 0.1);
+      } else if (e.code === 'KeyI') {
+        e.preventDefault();
+        updateCurrentVideoCuts({ introCutTime: parseFloat(trimmerCurrentTime.toFixed(2)) });
+      } else if (e.code === 'KeyO') {
+        e.preventDefault();
+        const oTime = Math.max(0, trimmerDuration - trimmerCurrentTime);
+        updateCurrentVideoCuts({ outroCutTime: parseFloat(oTime.toFixed(2)) });
+      } else if (e.code === 'Escape') {
+        closeTrimmer();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [trimmerIndex, trimmerCurrentTime, trimmerDuration, trimmerPlaying]);
+
 
   const updateCurrentVideoCuts = (updates) => {
     if (trimmerIndex === null) return;
@@ -662,8 +772,8 @@ export default function App() {
     setTrimmerAiInfo(null);
 
     try {
-      let vPath = v.path;
-      if (v.fileObj) {
+      let vPath = v.path || v.name;
+      if (v.fileObj && (!v.path || v.path === v.name)) {
         const up = await uploadFileLocally(v.fileObj, v.name);
         if (up) vPath = up;
       }
@@ -680,6 +790,10 @@ export default function App() {
           introCutTime: data.aiAnalysis.introCutTimestamp || 0,
           outroCutTime: data.aiAnalysis.outroCutSeconds || 0
         });
+        if (data.aiAnalysis.introCutTimestamp > 0 && trimmerVideoRef.current) {
+          trimmerVideoRef.current.currentTime = data.aiAnalysis.introCutTimestamp;
+          setTrimmerCurrentTime(data.aiAnalysis.introCutTimestamp);
+        }
       }
     } catch (e) {
       console.error('Error analizando con IA en trimmer:', e);
@@ -687,6 +801,14 @@ export default function App() {
       setTrimmerAiLoading(false);
     }
   };
+
+  const previewDeletedSegment = (seg) => {
+    if (!trimmerVideoRef.current) return;
+    trimmerVideoRef.current.currentTime = seg.start;
+    setTrimmerCurrentTime(seg.start);
+    trimmerVideoRef.current.play().then(() => setTrimmerPlaying(true)).catch(() => {});
+  };
+
 
   const stepVideoTime = (delta) => {
     if (trimmerVideoRef.current) {
@@ -2192,13 +2314,29 @@ export default function App() {
               </div>
             </div>
 
-            {/* Video Player Display */}
-            <div style={{ background: '#000', borderRadius: '10px', overflow: 'hidden', marginBottom: '14px', maxHeight: '340px', display: 'flex', justifyContent: 'center' }}>
+            {/* Dynamic Video Player Display with Center Play Icon & Real-time HUD */}
+            <div 
+              style={{ 
+                background: '#040711', 
+                borderRadius: '10px', 
+                overflow: 'hidden', 
+                marginBottom: '14px', 
+                maxHeight: '340px', 
+                display: 'flex', 
+                justifyContent: 'center',
+                alignItems: 'center',
+                position: 'relative',
+                border: '1px solid rgba(255,255,255,0.1)',
+                cursor: 'pointer',
+                boxShadow: 'inset 0 0 40px rgba(0,0,0,0.8)'
+              }}
+              onClick={toggleTrimmerPlay}
+            >
               <video 
                 ref={trimmerVideoRef}
                 controls={false}
                 src={getVideoSourceUrl(currentTrimmerVideo)}
-                style={{ maxHeight: '340px', maxWidth: '100%' }}
+                style={{ maxHeight: '340px', maxWidth: '100%', display: 'block' }}
                 onTimeUpdate={e => {
                   const t = e.target.currentTime;
                   setTrimmerCurrentTime(t);
@@ -2223,10 +2361,71 @@ export default function App() {
                 onPlay={() => setTrimmerPlaying(true)}
                 onPause={() => setTrimmerPlaying(false)}
               />
+
+              {/* Center Glassmorphic Play/Pause Overlay */}
+              {!trimmerPlaying && (
+                <div style={{
+                  position: 'absolute',
+                  width: '64px',
+                  height: '64px',
+                  borderRadius: '50%',
+                  background: 'rgba(0, 0, 0, 0.65)',
+                  backdropFilter: 'blur(8px)',
+                  border: '2px solid rgba(255, 255, 255, 0.4)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.7), 0 0 20px rgba(56, 189, 248, 0.4)',
+                  pointerEvents: 'none'
+                }}>
+                  <Play size={28} style={{ marginLeft: '4px', fill: '#fff' }} />
+                </div>
+              )}
+
+              {/* Status HUD Badge */}
+              <div style={{
+                position: 'absolute',
+                top: '10px',
+                left: '12px',
+                background: 'rgba(0,0,0,0.7)',
+                backdropFilter: 'blur(6px)',
+                padding: '4px 10px',
+                borderRadius: '6px',
+                fontSize: '0.72rem',
+                color: '#cbd5e1',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                pointerEvents: 'none',
+                border: '1px solid rgba(255,255,255,0.08)'
+              }}>
+                <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: trimmerPlaying ? '#10b981' : '#f59e0b', boxShadow: trimmerPlaying ? '0 0 6px #10b981' : 'none' }} />
+                {trimmerPlaying ? 'Reproduciendo' : 'Pausado (Espacio o Clic para reproducir)'}
+              </div>
+
+              {/* Timecode HUD Badge */}
+              <div style={{
+                position: 'absolute',
+                bottom: '10px',
+                right: '12px',
+                background: 'rgba(0,0,0,0.8)',
+                backdropFilter: 'blur(6px)',
+                padding: '4px 10px',
+                borderRadius: '6px',
+                fontSize: '0.75rem',
+                fontFamily: 'var(--font-mono)',
+                color: 'var(--accent-cyan)',
+                fontWeight: 700,
+                pointerEvents: 'none',
+                border: '1px solid rgba(0, 242, 254, 0.2)'
+              }}>
+                ⏱️ {trimmerCurrentTime.toFixed(2)}s / {(trimmerDuration || 0).toFixed(2)}s
+              </div>
             </div>
 
-            {/* NLE Timeline Track with Visual Cut Zones */}
-            <div style={{ background: 'rgba(0,0,0,0.35)', padding: '14px', borderRadius: '10px', marginBottom: '14px' }}>
+            {/* NLE Timeline Track with Filmstrip & Visual Cut Zones */}
+            <div style={{ background: 'rgba(0,0,0,0.4)', padding: '14px', borderRadius: '10px', marginBottom: '14px', border: '1px solid rgba(255,255,255,0.06)' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', fontSize: '0.8rem', fontFamily: 'var(--font-mono)' }}>
                 <span style={{ color: 'var(--accent-cyan)', fontWeight: 700 }}>
                   ⏱️ Cabezal: {trimmerCurrentTime.toFixed(2)}s / {(trimmerDuration || 0).toFixed(2)}s
@@ -2236,14 +2435,85 @@ export default function App() {
                 </span>
               </div>
 
-              {/* Multi-zone Timeline Bar */}
-              <div className="timeline-track-container" style={{ marginBottom: '10px' }}>
+              {/* Multi-zone Timeline Bar with Visual Filmstrip Storyboard */}
+              <div 
+                className="timeline-track-container" 
+                style={{ 
+                  marginBottom: '10px', 
+                  position: 'relative', 
+                  height: '68px',
+                  borderRadius: '8px', 
+                  overflow: 'hidden',
+                  background: '#090d16',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  cursor: 'pointer'
+                }}
+                onMouseMove={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+                  const pct = x / rect.width;
+                  const t = pct * (trimmerDuration || 1);
+                  setTrimmerHoverTime(t);
+                  setTrimmerHoverX(x);
+                }}
+                onMouseLeave={() => {
+                  setTrimmerHoverTime(null);
+                  setTrimmerHoverX(null);
+                }}
+              >
+                {/* Visual Filmstrip Thumbnails Ribbon */}
+                <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, display: 'flex', opacity: 0.75, pointerEvents: 'none' }}>
+                  {trimmerFilmstrip.length > 0 ? (
+                    trimmerFilmstrip.map((frame, fIdx) => (
+                      <div 
+                        key={fIdx} 
+                        style={{ 
+                          flex: 1, 
+                          height: '100%', 
+                          backgroundImage: `url(${frame.dataUrl})`, 
+                          backgroundSize: 'cover', 
+                          backgroundPosition: 'center',
+                          borderRight: '1px solid rgba(0,0,0,0.5)',
+                          position: 'relative'
+                        }}
+                      >
+                        <span style={{ position: 'absolute', bottom: 2, right: 3, fontSize: '0.6rem', color: 'rgba(255,255,255,0.8)', background: 'rgba(0,0,0,0.65)', padding: '0 3px', borderRadius: '2px', fontFamily: 'var(--font-mono)' }}>
+                          {frame.timestamp.toFixed(1)}s
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <div style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-sub)', fontSize: '0.74rem' }}>
+                      {trimmerFilmstripLoading ? '🎞️ Extrayendo fotogramas de referencia para el timeline...' : '🎞️ Pista de vídeo visual'}
+                    </div>
+                  )}
+                </div>
+
                 {/* Intro cut zone */}
                 {currentTrimmerCuts.introCutTime > 0 && trimmerDuration > 0 && (
                   <div 
                     className="timeline-zone-cut" 
-                    style={{ width: `${Math.min(100, (currentTrimmerCuts.introCutTime / trimmerDuration) * 100)}%` }} 
-                  />
+                    style={{ 
+                      position: 'absolute',
+                      left: 0,
+                      top: 0,
+                      bottom: 0,
+                      width: `${Math.min(100, (currentTrimmerCuts.introCutTime / trimmerDuration) * 100)}%`,
+                      background: 'repeating-linear-gradient(45deg, rgba(239, 68, 68, 0.45), rgba(239, 68, 68, 0.45) 8px, rgba(185, 28, 28, 0.55) 8px, rgba(185, 28, 28, 0.55) 16px)',
+                      borderRight: '2px solid #ef4444',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#fff',
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      textShadow: '0 1px 3px rgba(0,0,0,0.9)',
+                      zIndex: 2,
+                      pointerEvents: 'none'
+                    }}
+                  >
+                    ✂️ Intro ({currentTrimmerCuts.introCutTime.toFixed(1)}s)
+                  </div>
                 )}
 
                 {/* Middle Deleted Segments */}
@@ -2254,8 +2524,25 @@ export default function App() {
                   return (
                     <div 
                       key={seg.id}
-                      className="timeline-zone-cut-segment"
-                      style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
+                      style={{ 
+                        position: 'absolute',
+                        left: `${leftPct}%`, 
+                        width: `${widthPct}%`,
+                        top: 0,
+                        bottom: 0,
+                        background: 'repeating-linear-gradient(45deg, rgba(192, 132, 252, 0.5), rgba(192, 132, 252, 0.5) 6px, rgba(147, 51, 234, 0.6) 6px, rgba(147, 51, 234, 0.6) 12px)',
+                        borderLeft: '2px solid #a855f7',
+                        borderRight: '2px solid #a855f7',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#fff',
+                        fontSize: '0.68rem',
+                        fontWeight: 700,
+                        textShadow: '0 1px 3px rgba(0,0,0,0.9)',
+                        zIndex: 3,
+                        pointerEvents: 'none'
+                      }}
                       title={`Tramo omitido: ${seg.start}s a ${seg.end}s`}
                     >
                       ✂️ {(seg.end - seg.start).toFixed(1)}s
@@ -2268,11 +2555,27 @@ export default function App() {
                   <div 
                     className="timeline-zone-active"
                     style={{
+                      position: 'absolute',
+                      top: 0,
+                      bottom: 0,
                       left: `${(currentTrimmerCuts.introCutTime / trimmerDuration) * 100}%`,
-                      width: `${Math.max(0, ((trimmerDuration - currentTrimmerCuts.introCutTime - currentTrimmerCuts.outroCutTime) / trimmerDuration) * 100)}%`
+                      width: `${Math.max(0, ((trimmerDuration - currentTrimmerCuts.introCutTime - currentTrimmerCuts.outroCutTime) / trimmerDuration) * 100)}%`,
+                      background: 'rgba(16, 185, 129, 0.2)',
+                      borderLeft: currentTrimmerCuts.introCutTime > 0 ? '2px solid #10b981' : 'none',
+                      borderRight: currentTrimmerCuts.outroCutTime > 0 ? '2px solid #10b981' : 'none',
+                      boxShadow: 'inset 0 0 14px rgba(16, 185, 129, 0.35)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#34d399',
+                      fontWeight: 800,
+                      fontSize: '0.74rem',
+                      textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+                      zIndex: 2,
+                      pointerEvents: 'none'
                     }}
                   >
-                    Segmento Útil
+                    ✨ Contenido Útil ({trimmerNetDuration.toFixed(1)}s)
                   </div>
                 )}
 
@@ -2281,19 +2584,79 @@ export default function App() {
                   <div 
                     className="timeline-zone-cut-outro"
                     style={{ 
+                      position: 'absolute',
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
                       width: `${Math.min(100, (currentTrimmerCuts.outroCutTime / trimmerDuration) * 100)}%`,
-                      right: 0
+                      background: 'repeating-linear-gradient(45deg, rgba(239, 68, 68, 0.45), rgba(239, 68, 68, 0.45) 8px, rgba(185, 28, 28, 0.55) 8px, rgba(185, 28, 28, 0.55) 16px)',
+                      borderLeft: '2px solid #ef4444',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      color: '#fff',
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      textShadow: '0 1px 3px rgba(0,0,0,0.9)',
+                      zIndex: 2,
+                      pointerEvents: 'none'
                     }}
-                  />
+                  >
+                    ✂️ Outro ({currentTrimmerCuts.outroCutTime.toFixed(1)}s)
+                  </div>
                 )}
 
                 {/* Playhead Marker */}
                 {trimmerDuration > 0 && (
                   <div 
                     className="timeline-playhead-cursor"
-                    style={{ left: `${(trimmerCurrentTime / trimmerDuration) * 100}%` }}
+                    style={{ 
+                      position: 'absolute',
+                      top: 0,
+                      bottom: 0,
+                      left: `${(trimmerCurrentTime / trimmerDuration) * 100}%`,
+                      width: '2px',
+                      background: 'var(--accent-cyan)',
+                      boxShadow: '0 0 10px var(--accent-cyan)',
+                      zIndex: 5,
+                      pointerEvents: 'none'
+                    }}
                   >
-                    <div className="timeline-playhead-head" />
+                    <div style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: '-6px',
+                      width: '14px',
+                      height: '14px',
+                      background: 'var(--accent-cyan)',
+                      clipPath: 'polygon(0% 0%, 100% 0%, 50% 100%)',
+                      boxShadow: '0 2px 5px rgba(0,0,0,0.6)'
+                    }} />
+                  </div>
+                )}
+
+                {/* Hover Tooltip */}
+                {trimmerHoverTime !== null && trimmerHoverX !== null && (
+                  <div 
+                    style={{
+                      position: 'absolute',
+                      bottom: '4px',
+                      left: `${trimmerHoverX}px`,
+                      transform: 'translateX(-50%)',
+                      background: 'rgba(15, 23, 42, 0.92)',
+                      border: '1px solid var(--accent-cyan)',
+                      color: '#fff',
+                      padding: '2px 8px',
+                      borderRadius: '4px',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      pointerEvents: 'none',
+                      zIndex: 10,
+                      whiteSpace: 'nowrap',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.6)'
+                    }}
+                  >
+                    ⏱️ {trimmerHoverTime.toFixed(2)}s
                   </div>
                 )}
 
@@ -2305,6 +2668,17 @@ export default function App() {
                   step="0.05"
                   value={trimmerCurrentTime}
                   className="timeline-scrubber-slider"
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
+                    opacity: 0,
+                    cursor: 'pointer',
+                    zIndex: 6,
+                    margin: 0
+                  }}
                   onChange={e => {
                     const t = parseFloat(e.target.value);
                     setTrimmerCurrentTime(t);
@@ -2316,21 +2690,18 @@ export default function App() {
               {/* Transport Buttons & In/Out Markers */}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px' }}>
                 <div style={{ display: 'flex', gap: '4px' }}>
-                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(-1.0)}>-1s</button>
-                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(-0.1)}>-0.1s</button>
+                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(-1.0)} title="Retroceder 1s">-1s</button>
+                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(-0.1)} title="Retroceder 0.1s (←)">-0.1s</button>
                   <button 
                     className="btn-glow" 
-                    style={{ padding: '4px 12px', fontSize: '0.76rem' }}
-                    onClick={() => {
-                      if (!trimmerVideoRef.current) return;
-                      if (trimmerPlaying) trimmerVideoRef.current.pause();
-                      else trimmerVideoRef.current.play();
-                    }}
+                    style={{ padding: '4px 14px', fontSize: '0.76rem', display: 'flex', alignItems: 'center', gap: '5px' }}
+                    onClick={toggleTrimmerPlay}
                   >
+                    {trimmerPlaying ? <Pause size={13} /> : <Play size={13} fill="currentColor" />}
                     {trimmerPlaying ? 'Pausa' : 'Reproducir'}
                   </button>
-                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(0.1)}>+0.1s</button>
-                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(1.0)}>+1s</button>
+                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(0.1)} title="Avanzar 0.1s (→)">+0.1s</button>
+                  <button className="btn-outline" style={{ padding: '4px 7px', fontSize: '0.72rem' }} onClick={() => stepVideoTime(1.0)} title="Avanzar 1s">+1s</button>
                   <button className="btn-outline" style={{ padding: '4px 9px', fontSize: '0.72rem', color: '#34d399', borderColor: 'rgba(52, 211, 153, 0.4)' }} onClick={previewCutSegment} title="Previsualizar corte limpio saltando tramos">
                     ▶ Previsualizar
                   </button>
@@ -2452,14 +2823,24 @@ export default function App() {
                         <span>✂️ <strong>Tramo #{sIdx + 1}:</strong> {seg.start.toFixed(2)}s ➔ {seg.end.toFixed(2)}s</span>
                         <span style={{ fontSize: '0.7rem', color: 'var(--text-sub)' }}>(-{(seg.end - seg.start).toFixed(2)} segundos eliminados)</span>
                       </div>
-                      <button 
-                        className="btn-outline" 
-                        style={{ padding: '2px 6px', fontSize: '0.68rem', color: '#fff' }}
-                        onClick={() => removeDeletedSegment(seg.id)}
-                        title="Restaurar este segmento en el vídeo"
-                      >
-                        Restaurar
-                      </button>
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <button 
+                          className="btn-outline" 
+                          style={{ padding: '2px 8px', fontSize: '0.68rem', color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.4)' }}
+                          onClick={() => previewDeletedSegment(seg)}
+                          title="Inspeccionar este tramo en el reproductor"
+                        >
+                          👁️ Previsualizar
+                        </button>
+                        <button 
+                          className="btn-outline" 
+                          style={{ padding: '2px 6px', fontSize: '0.68rem', color: '#fff' }}
+                          onClick={() => removeDeletedSegment(seg.id)}
+                          title="Restaurar este segmento en el vídeo"
+                        >
+                          Restaurar
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -2468,13 +2849,58 @@ export default function App() {
 
             {/* AI Result Card if generated */}
             {trimmerAiInfo && (
-              <div style={{ background: 'rgba(139, 92, 246, 0.12)', border: '1px solid rgba(139, 92, 246, 0.35)', padding: '10px 14px', borderRadius: '8px', marginBottom: '12px', fontSize: '0.8rem' }}>
-                <div style={{ fontWeight: 700, color: '#c084fc', marginBottom: '3px' }}>✨ Gemini 3.8 Flash Detectó:</div>
-                <div>{trimmerAiInfo.visualSummary}</div>
-                {trimmerAiInfo.introDetails && <div style={{ marginTop: '2px', color: '#38bdf8' }}>▸ Cabecera: {trimmerAiInfo.introDetails} (Recortar {trimmerAiInfo.introCutTimestamp}s)</div>}
-                {trimmerAiInfo.outroDetails && <div style={{ marginTop: '2px', color: '#f472b6' }}>▸ Outro estudio: {trimmerAiInfo.outroDetails} (Recortar {trimmerAiInfo.outroCutSeconds}s)</div>}
+              <div style={{ 
+                background: 'linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(56, 189, 248, 0.1) 100%)', 
+                border: '1px solid rgba(139, 92, 246, 0.4)', 
+                padding: '12px 16px', 
+                borderRadius: '10px', 
+                marginBottom: '14px', 
+                fontSize: '0.82rem' 
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '8px' }}>
+                  <div style={{ fontWeight: 800, color: '#c084fc', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Sparkles size={16} /> Gemini 3.8 Flash Multimodal Vision:
+                  </div>
+                  {(trimmerAiInfo.introCutTimestamp > 0 || trimmerAiInfo.outroCutSeconds > 0) && (
+                    <button 
+                      className="btn-glow" 
+                      style={{ padding: '3px 10px', fontSize: '0.74rem' }}
+                      onClick={() => {
+                        const introCut = trimmerAiInfo.introCutTimestamp || 0;
+                        const outroCut = trimmerAiInfo.outroCutSeconds || 0;
+                        updateCurrentVideoCuts({
+                          introCutTime: introCut,
+                          outroCutTime: outroCut
+                        });
+                        if (trimmerVideoRef.current) {
+                          trimmerVideoRef.current.currentTime = introCut;
+                          setTrimmerCurrentTime(introCut);
+                        }
+                      }}
+                    >
+                      ✨ Aplicar Cortes de IA al Timeline
+                    </button>
+                  )}
+                </div>
+                <div style={{ color: '#e2e8f0', lineHeight: 1.4, marginBottom: '6px' }}>{trimmerAiInfo.visualSummary}</div>
+                {trimmerAiInfo.detectedText && (
+                  <div style={{ fontSize: '0.74rem', color: '#94a3b8', marginBottom: '4px' }}>
+                    <strong>📝 Texto detectado (OCR):</strong> {trimmerAiInfo.detectedText}
+                  </div>
+                )}
+                {trimmerAiInfo.introDetails && (
+                  <div style={{ marginTop: '3px', color: '#38bdf8' }}>
+                    ▸ <strong>Cabecera:</strong> {trimmerAiInfo.introDetails} (Sugerido: cortar {trimmerAiInfo.introCutTimestamp}s)
+                  </div>
+                )}
+                {trimmerAiInfo.outroDetails && (
+                  <div style={{ marginTop: '3px', color: '#f472b6' }}>
+                    ▸ <strong>Outro:</strong> {trimmerAiInfo.outroDetails} (Sugerido: cortar {trimmerAiInfo.outroCutSeconds}s)
+                  </div>
+                )}
               </div>
             )}
+
 
             {/* Numerical Fine-tune Inputs */}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '10px', marginBottom: '16px' }}>
@@ -2594,14 +3020,30 @@ export default function App() {
               La suite utiliza el modelo <strong>Gemini 3.8 Flash</strong> para escanear fotogramas densos, detectar cabeceras con texto/título, reconhecer placas de estudio y redactar copys acordes al metraje.
             </p>
 
+            {configData.isConfigured && (
+              <div style={{ background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '8px 12px', borderRadius: '8px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#34d399', fontSize: '0.8rem', fontWeight: 600 }}>
+                  <CheckCircle2 size={16} /> API Key de Gemini Conectada ({configData.maskedKey})
+                </div>
+                <button 
+                  className="btn-outline" 
+                  style={{ padding: '3px 8px', fontSize: '0.7rem', color: '#fda4af', borderColor: 'rgba(244, 63, 94, 0.4)', display: 'flex', alignItems: 'center', gap: '4px' }}
+                  onClick={clearApiKey}
+                  title="Eliminar clave configurada"
+                >
+                  <Trash2 size={12} /> Eliminar
+                </button>
+              </div>
+            )}
+
             <div style={{ marginBottom: '12px' }}>
               <label style={{ fontSize: '0.8rem', color: 'var(--text-main)', display: 'block', marginBottom: '5px' }}>
-                Gemini API Key {configData.isConfigured && <span style={{ color: '#34d399' }}>(Configurada: {configData.maskedKey})</span>}
+                {configData.isConfigured ? 'Reemplazar API Key (opcional)' : 'Gemini API Key'}
               </label>
               <input 
                 type="password"
                 className="input-field"
-                placeholder={configData.isConfigured ? 'Ingresa una nueva key para reemplazarla...' : 'Pega aquí tu API Key de Gemini...'}
+                placeholder={configData.isConfigured ? 'Deja en blanco para conservar la clave actual...' : 'Pega aquí tu API Key de Gemini...'}
                 value={apiKeyInput}
                 onChange={e => setApiKeyInput(e.target.value)}
               />
@@ -2634,6 +3076,7 @@ export default function App() {
             <button className="btn-glow" style={{ width: '100%', justifyContent: 'center' }} onClick={saveConfig}>
               <CheckCheck size={16} /> Guardar Configuración
             </button>
+
           </div>
         </div>
       )}

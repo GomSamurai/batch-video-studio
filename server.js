@@ -172,6 +172,47 @@ if (!fs.existsSync(tempUploadsDir)) {
   } catch (e) {}
 }
 
+// Universal video path resolver (resolves relative names, uploaded files, and output dirs)
+function resolveExistingVideoPath(rawPath) {
+  if (!rawPath || typeof rawPath !== 'string') return null;
+  const cleanPath = rawPath.trim();
+  const baseName = path.basename(cleanPath);
+
+  const candidates = [
+    cleanPath,
+    path.normalize(cleanPath),
+    path.resolve(cleanPath),
+    path.join(tempUploadsDir, baseName),
+    path.join(tempUploadsDir, cleanPath),
+    path.join(process.cwd(), cleanPath),
+    path.join(process.cwd(), baseName),
+    path.join(process.cwd(), 'temp_uploads', baseName),
+    path.join(getDefaultOutputDir(), baseName),
+    path.join(process.cwd(), 'PROCESADOS', baseName),
+    path.join(BASE_STORAGE_DIR, baseName),
+    path.join(BASE_STORAGE_DIR, 'PROCESADOS', baseName),
+    path.join('c:\\VSCODE\\fframes', baseName),
+    path.join('c:\\VSCODE\\fframes\\temp_uploads', baseName),
+    path.join('c:\\VSCODE\\fframes\\PROCESADOS', baseName),
+    path.join(process.env.USERPROFILE || 'C:\\', 'AppData', 'Roaming', 'Batch Video Studio AI', 'data', 'temp_uploads', baseName),
+    path.join(process.env.USERPROFILE || 'C:\\', 'AppData', 'Roaming', 'Batch Video Studio AI', 'data', 'PROCESADOS', baseName)
+  ];
+
+  for (const c of candidates) {
+    if (c && fs.existsSync(c)) {
+      try {
+        const stat = fs.statSync(c);
+        if (stat.isFile() && stat.size > 0) {
+          return c;
+        }
+      } catch (e) {}
+    }
+  }
+
+  return null;
+}
+
+
 // -------------------------------------------------------------
 // Probing & Signal Analysis Helpers
 // -------------------------------------------------------------
@@ -268,21 +309,24 @@ async function extractKeyframes(videoPath, duration, count = 12) {
   const safeId = Date.now() + '_' + Math.floor(Math.random() * 1000);
 
   // Dense strategic sampling across intro, core content, and outro
-  const rawTimestamps = [
-    0.3,
-    1.2,
-    2.5,
-    4.0,
-    6.0,
-    Math.min(8.5, duration * 0.2),
-    duration * 0.35,
-    duration * 0.55,
-    duration * 0.75,
-    Math.max(0, duration - 8.5),
-    Math.max(0, duration - 5.5),
-    Math.max(0, duration - 3.0),
-    Math.max(0, duration - 1.0)
-  ];
+  const rawTimestamps = [];
+  if (duration <= 8) {
+    for (let s = 0.2; s < duration; s += 0.7) rawTimestamps.push(s);
+  } else {
+    // Dense intro scan
+    rawTimestamps.push(0.2, 0.8, 1.8, 3.0, 4.5, 6.0);
+    // Core content
+    rawTimestamps.push(duration * 0.25, duration * 0.45, duration * 0.65);
+    // Dense outro scan
+    rawTimestamps.push(
+      Math.max(0, duration - 8.5),
+      Math.max(0, duration - 6.0),
+      Math.max(0, duration - 4.0),
+      Math.max(0, duration - 2.5),
+      Math.max(0, duration - 1.2),
+      Math.max(0, duration - 0.4)
+    );
+  }
 
   const uniqueTimestamps = [...new Set(rawTimestamps.map(t => Math.max(0, Math.min(t, Math.max(0, duration - 0.2)))))].sort((a, b) => a - b);
 
@@ -416,10 +460,11 @@ RESPONDE EXCLUSIVAMENTE CON UN OBJETO JSON VÁLIDO CON ESTA ESTRUCTURA EXACTA:
 }
 
 // Generate Copy on processed video
-async function generateCopyForProcessedVideo(videoPath, tone = 'Profesional', videoName = '') {
+async function generateCopyForProcessedVideo(rawPath, tone = 'Profesional', videoName = '') {
+  const videoPath = resolveExistingVideoPath(rawPath) || rawPath;
   const cleanTitle = path.basename(videoName || videoPath).replace(/\.[^/.]+$/, "");
   
-  if (config.geminiApiKey && fs.existsSync(videoPath)) {
+  if (config.geminiApiKey && videoPath && fs.existsSync(videoPath)) {
     try {
       const info = await probeVideoInfo(videoPath);
       const keyframes = await extractKeyframes(videoPath, info.duration, 8);
@@ -570,6 +615,7 @@ app.get('/api/status', (req, res) => {
 app.get('/api/config', (req, res) => {
   res.json({
     isConfigured: !!config.geminiApiKey,
+    hasGeminiKey: !!config.geminiApiKey,
     maskedKey: config.geminiApiKey ? '••••••••' + config.geminiApiKey.slice(-4) : '',
     geminiModel: config.geminiModel || 'gemini-3.8-flash'
   });
@@ -577,18 +623,30 @@ app.get('/api/config', (req, res) => {
 
 app.post('/api/config', (req, res) => {
   const { geminiApiKey, geminiModel } = req.body;
-  if (geminiApiKey !== undefined) {
+
+  // Only update if a genuine non-empty key was passed, or explicit '__CLEAR__'
+  if (typeof geminiApiKey === 'string' && geminiApiKey.trim().length > 0) {
     config.geminiApiKey = geminiApiKey.trim();
+  } else if (geminiApiKey === '__CLEAR__') {
+    config.geminiApiKey = '';
   }
+
   if (geminiModel) {
     config.geminiModel = geminiModel;
   }
   
   try {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    // Also sync to workspace and candidate locations
+    const wsConfig = path.join(process.cwd(), 'config.json');
+    try { fs.writeFileSync(wsConfig, JSON.stringify(config, null, 2)); } catch (e) {}
+    const rootConfig = 'c:\\VSCODE\\fframes\\config.json';
+    try { if (fs.existsSync(rootConfig)) fs.writeFileSync(rootConfig, JSON.stringify(config, null, 2)); } catch (e) {}
+
     res.json({
       success: true,
       isConfigured: !!config.geminiApiKey,
+      hasGeminiKey: !!config.geminiApiKey,
       maskedKey: config.geminiApiKey ? '••••••••' + config.geminiApiKey.slice(-4) : '',
       geminiModel: config.geminiModel
     });
@@ -596,6 +654,7 @@ app.post('/api/config', (req, res) => {
     res.status(500).json({ error: 'No se pudo guardar la configuración: ' + err.message });
   }
 });
+
 
 // -------------------------------------------------------------
 // Endpoints: Presets
@@ -697,11 +756,11 @@ app.get('/api/browse', async (req, res) => {
 // Video stream for player
 app.get('/api/video-stream', (req, res) => {
   try {
-    let videoPath = req.query.path;
-    if (!videoPath) return res.status(400).send('Ruta no proporcionada');
-    videoPath = path.normalize(videoPath);
+    const rawPath = req.query.path;
+    if (!rawPath) return res.status(400).send('Ruta no proporcionada');
+    const videoPath = resolveExistingVideoPath(rawPath);
 
-    if (!fs.existsSync(videoPath)) {
+    if (!videoPath || !fs.existsSync(videoPath)) {
       return res.status(404).send('Vídeo no encontrado en la ruta especificada');
     }
 
@@ -750,11 +809,11 @@ app.get('/api/video-stream', (req, res) => {
 // Fast Cached Video Thumbnail Endpoint
 app.get('/api/thumbnail', async (req, res) => {
   try {
-    let videoPath = req.query.path;
-    if (!videoPath) return res.status(400).send('Ruta no proporcionada');
-    videoPath = path.normalize(videoPath);
+    const rawPath = req.query.path;
+    if (!rawPath) return res.status(400).send('Ruta no proporcionada');
+    const videoPath = resolveExistingVideoPath(rawPath);
 
-    if (!fs.existsSync(videoPath)) {
+    if (!videoPath || !fs.existsSync(videoPath)) {
       return res.status(404).send('Vídeo no encontrado');
     }
 
@@ -776,6 +835,69 @@ app.get('/api/thumbnail', async (req, res) => {
     res.status(500).send('Error de miniatura: ' + err.message);
   }
 });
+
+// Video Filmstrip: generates a sequence of 8-12 thumbnail frames across duration for visual reference in NLE
+app.get('/api/video-filmstrip', async (req, res) => {
+  try {
+    const rawPath = req.query.path;
+    if (!rawPath) return res.status(400).json({ error: 'Ruta no proporcionada' });
+    const videoPath = resolveExistingVideoPath(rawPath);
+
+    if (!videoPath || !fs.existsSync(videoPath)) {
+      return res.status(404).json({ error: 'Vídeo no encontrado en disco' });
+    }
+
+    const info = await probeVideoInfo(videoPath);
+    const duration = info.duration || 30;
+    const count = Math.max(6, Math.min(14, parseInt(req.query.count, 10) || 10));
+
+    const stat = fs.statSync(videoPath);
+    const hash = Buffer.from(`${videoPath}_${stat.size}_${Math.round(stat.mtimeMs)}`).toString('base64url').slice(-24);
+    const filmstripDir = path.join(tempUploadsDir, 'filmstrips', hash);
+    if (!fs.existsSync(filmstripDir)) {
+      fs.mkdirSync(filmstripDir, { recursive: true });
+    }
+
+    const frames = [];
+    const step = duration / count;
+
+    for (let i = 0; i < count; i++) {
+      const timestamp = Math.max(0.1, Math.min(duration - 0.1, i * step + (step * 0.25)));
+      const frameFile = path.join(filmstripDir, `f_${i}.jpg`);
+
+      if (!fs.existsSync(frameFile)) {
+        try {
+          await execPromise(
+            `${ffmpegCmd} -y -ss ${timestamp.toFixed(2)} -i "${videoPath}" -vframes 1 -vf "scale=180:-1" -q:v 4 "${frameFile}"`
+          );
+        } catch (e) {
+          // ignore individual frame error
+        }
+      }
+
+      if (fs.existsSync(frameFile)) {
+        const base64 = fs.readFileSync(frameFile).toString('base64');
+        frames.push({
+          index: i,
+          timestamp: parseFloat(timestamp.toFixed(2)),
+          dataUrl: `data:image/jpeg;base64,${base64}`
+        });
+      }
+    }
+
+    res.json({
+      success: true,
+      videoPath,
+      duration,
+      count: frames.length,
+      frames
+    });
+  } catch (err) {
+    console.error('Error generando filmstrip:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // Local File Upload Endpoint
 app.post('/api/upload', (req, res) => {
@@ -820,9 +942,10 @@ app.post('/api/open-folder', (req, res) => {
 // Endpoints: AI Scene Vision (Auditoría previa & Asistente)
 // -------------------------------------------------------------
 app.post('/api/ai/analyze-scene', async (req, res) => {
-  const { videoPath } = req.body;
+  const { videoPath: rawPath } = req.body;
+  const videoPath = resolveExistingVideoPath(rawPath);
   if (!videoPath || !fs.existsSync(videoPath)) {
-    return res.status(400).json({ error: 'Ruta de vídeo no válida.' });
+    return res.status(400).json({ error: 'Ruta de vídeo no válida o no encontrada en disco.' });
   }
 
   try {
@@ -849,11 +972,11 @@ app.post('/api/ai/analyze-scene', async (req, res) => {
           duration,
           aiAnalysis: {
             hasIntroLogo: geminiResult.hasIntroLogo || finalIntroCut > 0,
-            introCutTimestamp: finalIntroCut,
+            introCutTimestamp: parseFloat(finalIntroCut.toFixed(2)),
             introDetails: geminiResult.introDetails || '',
             hasOutroCard: geminiResult.hasOutroCard || finalOutroCut > 0,
-            outroCutTimestamp: finalOutroCut > 0 ? duration - finalOutroCut : duration,
-            outroCutSeconds: finalOutroCut,
+            outroCutTimestamp: parseFloat((finalOutroCut > 0 ? duration - finalOutroCut : duration).toFixed(2)),
+            outroCutSeconds: parseFloat(finalOutroCut.toFixed(2)),
             outroDetails: geminiResult.outroDetails || '',
             visualSummary: geminiResult.visualSummary,
             detectedText: geminiResult.detectedText || '',
@@ -875,11 +998,11 @@ app.post('/api/ai/analyze-scene', async (req, res) => {
       duration,
       aiAnalysis: {
         hasIntroLogo: deterministic.blackIntroEnd > 0,
-        introCutTimestamp: introCutSuggested,
+        introCutTimestamp: parseFloat(introCutSuggested.toFixed(2)),
         introDetails: 'Detección por señal de corte negro/silencio',
         hasOutroCard: false,
-        outroCutTimestamp: outroCutSuggested,
-        outroCutSeconds: duration - outroCutSuggested,
+        outroCutTimestamp: parseFloat(outroCutSuggested.toFixed(2)),
+        outroCutSeconds: parseFloat((duration - outroCutSuggested).toFixed(2)),
         outroDetails: '',
         visualSummary: 'Análisis determinista local. Conecta tu API Key de Gemini para visión multimodal completa.',
         detectedText: '',
@@ -894,9 +1017,10 @@ app.post('/api/ai/analyze-scene', async (req, res) => {
 
 // Generate Copy on-demand for a single video
 app.post('/api/ai/generate-copy-single', async (req, res) => {
-  const { videoPath, tone = 'Profesional' } = req.body;
+  const { videoPath: rawPath, tone = 'Profesional' } = req.body;
+  const videoPath = resolveExistingVideoPath(rawPath);
   if (!videoPath || !fs.existsSync(videoPath)) {
-    return res.status(400).json({ error: 'Ruta de vídeo no válida.' });
+    return res.status(400).json({ error: 'Ruta de vídeo no válida o no encontrada en disco.' });
   }
   try {
     const copyData = await generateCopyForProcessedVideo(videoPath, tone, path.basename(videoPath));
@@ -905,6 +1029,7 @@ app.post('/api/ai/generate-copy-single', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
 
 // -------------------------------------------------------------
 // Endpoints: Master Batch Processing Engine
@@ -943,16 +1068,8 @@ app.post('/api/batch/start', async (req, res) => {
       const videoName = video.name;
       const indexStr = String(i + 1).padStart(3, '0');
 
-      let originalPath = video.path;
-      if (!originalPath || !path.isAbsolute(originalPath)) {
-        const p1 = path.join(process.cwd(), videoName);
-        const p2 = path.join(tempUploadsDir, videoName);
-        if (fs.existsSync(p1)) originalPath = p1;
-        else if (fs.existsSync(p2)) originalPath = p2;
-        else if (originalPath && fs.existsSync(path.join(process.cwd(), originalPath))) {
-          originalPath = path.join(process.cwd(), originalPath);
-        }
-      }
+      let originalPath = resolveExistingVideoPath(video.path) || resolveExistingVideoPath(videoName) || video.path;
+
 
       let newName = options.renamePattern || '{prefix}_{counter}_{original}';
       const cleanOriginalName = path.basename(videoName, path.extname(videoName));
