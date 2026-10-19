@@ -7,7 +7,7 @@ import {
   Key, HelpCircle, ExternalLink, ShieldCheck, CheckCheck, 
   AlertCircle, FolderCheck, Scissors, ChevronLeft, ChevronRight,
   Maximize2, Crosshair, Move, Search, Filter, Smartphone, Monitor, Square,
-  RotateCcw, Hash, Type, ArrowRight, ArrowLeft, Palette
+  RotateCcw, Hash, Type, ArrowRight, ArrowLeft, Palette, Heart
 } from 'lucide-react';
 
 
@@ -18,15 +18,37 @@ const THEMES = [
   { id: 'sunset-gold', name: 'Sunset Gold', dot: '#f59e0b' },
   { id: 'crimson-red', name: 'Crimson Red', dot: '#ef4444' },
   { id: 'midnight-blue', name: 'Midnight Blue', dot: '#38bdf8' },
+  { id: 'davtor-gold', name: 'DavTor Gold ✨', dot: '#fbbf24' },
 ];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('browse'); // 'browse', 'rules', 'process'
-  const [backendStatus, setBackendStatus] = useState({ online: false, ffmpegAvailable: false, hasGeminiKey: false });
-  const [configData, setConfigData] = useState({ isConfigured: false, maskedKey: '', geminiModel: 'gemini-3.8-flash' });
+  const [backendStatus, setBackendStatus] = useState({ online: false, ffmpegAvailable: false, hasGeminiKey: false, hasAiKey: false, aiProvider: 'gemini' });
+  const [configData, setConfigData] = useState({ 
+    isConfigured: false, 
+    activeProvider: 'gemini',
+    aiProvider: 'gemini',
+    gemini: { isConfigured: false, maskedKey: '', model: 'gemini-3.8-flash' },
+    openai: { isConfigured: false, maskedKey: '', model: 'gpt-4o-mini' },
+    anthropic: { isConfigured: false, maskedKey: '', model: 'claude-3-5-sonnet-20241022' },
+    maskedKey: '', 
+    geminiModel: 'gemini-3.8-flash' 
+  });
   const [showConfigModal, setShowConfigModal] = useState(false);
-  const [apiKeyInput, setApiKeyInput] = useState('');
+  const [selectedProviderTab, setSelectedProviderTab] = useState('gemini'); // 'gemini' | 'openai' | 'anthropic'
+  const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [geminiModelSelect, setGeminiModelSelect] = useState('gemini-3.8-flash');
+  const [openaiKeyInput, setOpenaiKeyInput] = useState('');
+  const [openaiModelSelect, setOpenaiModelSelect] = useState('gpt-4o-mini');
+  const [anthropicKeyInput, setAnthropicKeyInput] = useState('');
+  const [anthropicModelSelect, setAnthropicModelSelect] = useState('claude-3-5-sonnet-20241022');
+  const [testingKey, setTestingKey] = useState(false);
+  const [testResult, setTestResult] = useState(null);
   const [configSaveMsg, setConfigSaveMsg] = useState(null);
+
+  // DavTor Easter Egg State
+  const [showDavTorModal, setShowDavTorModal] = useState(false);
+  const [versionClickCount, setVersionClickCount] = useState(0);
 
   // Theme Color System
   const [currentTheme, setCurrentTheme] = useState(() => {
@@ -230,13 +252,15 @@ export default function App() {
       setBackendStatus({
         online: true,
         ffmpegAvailable: data.ffmpegAvailable,
-        hasGeminiKey: data.hasGeminiKey
+        hasGeminiKey: data.hasGeminiKey,
+        hasAiKey: data.hasAiKey,
+        aiProvider: data.aiProvider || 'gemini'
       });
       if (data.cwd && !currentDir) {
         browseDirectory(data.cwd);
       }
     } catch (err) {
-      setBackendStatus({ online: false, ffmpegAvailable: false, hasGeminiKey: false });
+      setBackendStatus({ online: false, ffmpegAvailable: false, hasGeminiKey: false, hasAiKey: false, aiProvider: 'gemini' });
     }
   };
 
@@ -245,6 +269,13 @@ export default function App() {
       const res = await fetch('http://localhost:3001/api/config');
       const data = await res.json();
       setConfigData(data);
+      if (data.activeProvider) {
+        setSelectedProviderTab(data.activeProvider);
+      }
+      if (data.gemini?.model) setGeminiModelSelect(data.gemini.model);
+      if (data.openai?.model) setOpenaiModelSelect(data.openai.model);
+      if (data.anthropic?.model) setAnthropicModelSelect(data.anthropic.model);
+
       if (!data.isConfigured) {
         const cachedKey = localStorage.getItem('batch_studio_gemini_key');
         if (cachedKey) {
@@ -252,6 +283,7 @@ export default function App() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              aiProvider: 'gemini',
               geminiApiKey: cachedKey.trim(),
               geminiModel: data.geminiModel || 'gemini-3.8-flash'
             })
@@ -259,7 +291,7 @@ export default function App() {
           const autoData = await autoRes.json();
           if (autoData.isConfigured) {
             setConfigData(autoData);
-            setBackendStatus(prev => ({ ...prev, hasGeminiKey: true }));
+            setBackendStatus(prev => ({ ...prev, hasGeminiKey: true, hasAiKey: true }));
           }
         }
       }
@@ -268,15 +300,56 @@ export default function App() {
     }
   };
 
+  const testCurrentApiKey = async () => {
+    setTestingKey(true);
+    setTestResult(null);
+    try {
+      const prov = selectedProviderTab;
+      let key = '';
+      let model = '';
+      if (prov === 'openai') {
+        key = openaiKeyInput.trim();
+        model = openaiModelSelect;
+      } else if (prov === 'anthropic') {
+        key = anthropicKeyInput.trim();
+        model = anthropicModelSelect;
+      } else {
+        key = geminiKeyInput.trim();
+        model = geminiModelSelect;
+      }
+
+      const res = await fetch('http://localhost:3001/api/config/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: prov, apiKey: key, model })
+      });
+      const data = await res.json();
+      setTestResult(data);
+    } catch (err) {
+      setTestResult({ success: false, error: 'Error de conexión: ' + err.message });
+    } finally {
+      setTestingKey(false);
+    }
+  };
+
   const saveConfig = async () => {
     try {
-      const trimmedKey = apiKeyInput.trim();
       const payload = {
-        geminiModel: configData.geminiModel || 'gemini-3.8-flash'
+        aiProvider: selectedProviderTab
       };
-      if (trimmedKey) {
-        payload.geminiApiKey = trimmedKey;
-      }
+
+      const gKey = geminiKeyInput.trim();
+      if (gKey) payload.geminiApiKey = gKey;
+      payload.geminiModel = geminiModelSelect;
+
+      const oKey = openaiKeyInput.trim();
+      if (oKey) payload.openaiApiKey = oKey;
+      payload.openaiModel = openaiModelSelect;
+
+      const aKey = anthropicKeyInput.trim();
+      if (aKey) payload.anthropicApiKey = aKey;
+      payload.anthropicModel = anthropicModelSelect;
+
       const res = await fetch('http://localhost:3001/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -284,12 +357,20 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
-        if (trimmedKey) {
-          localStorage.setItem('batch_studio_gemini_key', trimmedKey);
-        }
+        if (gKey) localStorage.setItem('batch_studio_gemini_key', gKey);
+        if (oKey) localStorage.setItem('batch_studio_openai_key', oKey);
+        if (aKey) localStorage.setItem('batch_studio_anthropic_key', aKey);
+
         setConfigData(data);
-        setBackendStatus(prev => ({ ...prev, hasGeminiKey: data.isConfigured }));
-        setApiKeyInput('');
+        setBackendStatus(prev => ({ 
+          ...prev, 
+          hasGeminiKey: !!data.gemini?.isConfigured, 
+          hasAiKey: data.isConfigured,
+          aiProvider: data.activeProvider 
+        }));
+        setGeminiKeyInput('');
+        setOpenaiKeyInput('');
+        setAnthropicKeyInput('');
         setConfigSaveMsg('✅ Configuración guardada con éxito.');
         setTimeout(() => {
           setConfigSaveMsg(null);
@@ -301,19 +382,39 @@ export default function App() {
     }
   };
 
-  const clearApiKey = async () => {
-    if (!window.confirm('¿Seguro que deseas eliminar la API Key de Gemini configurada?')) return;
+  const clearProviderKey = async (provToClear) => {
+    const prov = provToClear || selectedProviderTab;
+    const provNames = { gemini: 'Google Gemini', openai: 'OpenAI', anthropic: 'Anthropic Claude' };
+    if (!window.confirm(`¿Seguro que deseas eliminar la API Key configurada para ${provNames[prov] || prov}?`)) return;
     try {
+      const payload = {};
+      if (prov === 'openai') {
+        payload.openaiApiKey = '__CLEAR__';
+        localStorage.removeItem('batch_studio_openai_key');
+      } else if (prov === 'anthropic') {
+        payload.anthropicApiKey = '__CLEAR__';
+        localStorage.removeItem('batch_studio_anthropic_key');
+      } else {
+        payload.geminiApiKey = '__CLEAR__';
+        localStorage.removeItem('batch_studio_gemini_key');
+      }
+
       const res = await fetch('http://localhost:3001/api/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ geminiApiKey: '__CLEAR__' })
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
-      localStorage.removeItem('batch_studio_gemini_key');
       setConfigData(data);
-      setBackendStatus(prev => ({ ...prev, hasGeminiKey: false }));
-      setConfigSaveMsg('🗑️ API Key eliminada.');
+      setBackendStatus(prev => ({ 
+        ...prev, 
+        hasGeminiKey: !!data.gemini?.isConfigured, 
+        hasAiKey: data.isConfigured,
+        aiProvider: data.activeProvider 
+      }));
+      setTestResult(null);
+      setConfigSaveMsg(`🗑️ Clave de ${provNames[prov] || prov} eliminada.`);
+      setTimeout(() => setConfigSaveMsg(null), 2500);
     } catch (err) {
       setConfigSaveMsg('❌ Error: ' + err.message);
     }
@@ -1014,10 +1115,24 @@ export default function App() {
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <h1 className="gradient-title" style={{ fontSize: '1.35rem' }}>BATCH VIDEO STUDIO AI</h1>
-              <span className="badge-pill badge-purple" style={{ fontSize: '0.65rem' }}>v2.5 PRO</span>
+              <span 
+                className="badge-pill badge-purple" 
+                style={{ fontSize: '0.65rem', cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => {
+                  const next = versionClickCount + 1;
+                  setVersionClickCount(next);
+                  if (next >= 3) {
+                    setShowDavTorModal(true);
+                    setVersionClickCount(0);
+                  }
+                }}
+                title="v2.5 PRO • Clic para detalles de versión"
+              >
+                v2.5 PRO
+              </span>
             </div>
             <p style={{ fontSize: '0.78rem', color: 'var(--text-sub)' }}>
-              Suite Profesional • Gemini 3.8 Flash Vision • Recorte NLE Multi-Segmento & Live Canvas
+              Suite Profesional • Multi-AI Vision ({configData.activeProvider ? configData.activeProvider.toUpperCase() : 'GEMINI'} / OPENAI / CLAUDE) • Recorte NLE Multi-Segmento
             </p>
           </div>
         </div>
@@ -1038,12 +1153,17 @@ export default function App() {
         {/* Status Badges & Config Trigger */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           {configData.isConfigured ? (
-            <button className="badge-pill badge-cyan" onClick={() => setShowConfigModal(true)} style={{ cursor: 'pointer', border: '1px solid rgba(0,242,254,0.4)' }} title="Gemini 3.8 Flash Activo para Visión y Copy">
-              <Sparkles size={13} /> Gemini 3.8 Flash OK
+            <button 
+              className="badge-pill badge-cyan" 
+              onClick={() => setShowConfigModal(true)} 
+              style={{ cursor: 'pointer', border: '1px solid rgba(0,242,254,0.4)' }} 
+              title={`IA Conectada (${configData.activeProvider?.toUpperCase()}). Clic para configurar proveedores o comprobar claves.`}
+            >
+              <Sparkles size={13} /> {configData.activeProvider === 'openai' ? 'OpenAI GPT-4o OK' : (configData.activeProvider === 'anthropic' ? 'Claude 3.5 Sonnet OK' : 'Gemini 3.8 Flash OK')}
             </button>
           ) : (
-            <button className="badge-pill badge-amber" onClick={() => setShowConfigModal(true)} style={{ cursor: 'pointer' }} title="Conectar API Key">
-              <Key size={13} /> Conectar Gemini API
+            <button className="badge-pill badge-amber" onClick={() => setShowConfigModal(true)} style={{ cursor: 'pointer' }} title="Conectar API Key de Gemini, OpenAI o Claude">
+              <Key size={13} /> Conectar IA (Gemini / OpenAI / Claude)
             </button>
           )}
 
@@ -1260,7 +1380,13 @@ export default function App() {
                         style={{ paddingLeft: 30, fontSize: '0.8rem', padding: '7px 10px 7px 30px' }}
                         placeholder="Buscar en el lote..." 
                         value={searchBatch} 
-                        onChange={e => setSearchBatch(e.target.value)}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setSearchBatch(val);
+                          if (val.trim().toLowerCase() === 'davtor') {
+                            setShowDavTorModal(true);
+                          }
+                        }}
                       />
                     </div>
                     <button 
@@ -2285,6 +2411,50 @@ export default function App() {
 
       </main>
 
+      {/* Studio Global Subtle Footer with DavTor Subliminal Tribute */}
+      <footer style={{
+        padding: '14px 28px',
+        marginTop: 'auto',
+        borderTop: '1px solid rgba(255, 255, 255, 0.05)',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        fontSize: '0.74rem',
+        color: 'var(--text-sub)',
+        background: 'rgba(5, 8, 17, 0.75)',
+        backdropFilter: 'blur(8px)',
+        userSelect: 'none'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span>BATCH VIDEO STUDIO AI</span>
+          <span style={{ opacity: 0.35 }}>•</span>
+          <span style={{ color: backendStatus.online ? '#34d399' : '#f87171' }}>
+            {backendStatus.online ? '🟢 Servidor Conectado' : '🔴 Servidor Offline'}
+          </span>
+          <span style={{ opacity: 0.35 }}>•</span>
+          <span>Motor IA: <strong style={{ color: configData.isConfigured ? 'var(--accent-cyan)' : 'var(--text-muted)' }}>{configData.isConfigured ? (configData.activeProvider ? configData.activeProvider.toUpperCase() : 'GEMINI') : 'FFmpeg Determinista'}</strong></span>
+        </div>
+
+        <div 
+          onClick={() => setShowDavTorModal(true)}
+          style={{
+            cursor: 'pointer',
+            opacity: 0.45,
+            transition: 'all 0.25s ease',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px'
+          }}
+          onMouseEnter={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
+          onMouseLeave={e => { e.currentTarget.style.opacity = '0.45'; e.currentTarget.style.transform = 'none'; }}
+          title="✨ Creado con cariño para DavTor (Clic para ver dedicatoria)"
+        >
+          <span>Diseñado con</span>
+          <span style={{ color: '#f43f5e', fontSize: '0.9rem', display: 'inline-block' }}>❤️</span>
+          <span>para <strong style={{ color: 'var(--accent-cyan)' }}>DavTor</strong></span>
+        </div>
+      </footer>
+
       {/* ============================================================== */}
       {/* QUICK TRIM STUDIO MODAL (NLE MULTI-SEGMENT TRIMMER)            */}
       {/* ============================================================== */}
@@ -3003,80 +3173,395 @@ export default function App() {
         </div>
       )}
 
-      {/* Settings / API Key Modal */}
+      {/* Settings / Multi-Provider AI Modal */}
       {showConfigModal && (
         <div className="cinema-modal-overlay" onClick={() => setShowConfigModal(false)}>
-          <div className="cinema-modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '540px', padding: '24px' }}>
+          <div className="cinema-modal-content" onClick={e => e.stopPropagation()} style={{ maxWidth: '580px', padding: '24px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
               <h2 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <Key size={18} color="var(--accent-cyan)" /> Configuración de Visión IA
+                <Key size={18} color="var(--accent-cyan)" /> Configuración de Motores de Visión IA
               </h2>
               <button className="btn-outline" style={{ padding: '4px 7px' }} onClick={() => setShowConfigModal(false)}>
                 <X size={16} />
               </button>
             </div>
 
-            <p style={{ fontSize: '0.8rem', color: 'var(--text-sub)', marginBottom: '14px', lineHeight: 1.4 }}>
-              La suite utiliza el modelo <strong>Gemini 3.8 Flash</strong> para escanear fotogramas densos, detectar cabeceras con texto/título, reconhecer placas de estudio y redactar copys acordes al metraje.
-            </p>
+            {/* Provider Tabs */}
+            <div style={{ display: 'flex', gap: '6px', background: 'rgba(0,0,0,0.3)', padding: '4px', borderRadius: '8px', marginBottom: '16px' }}>
+              <button 
+                type="button"
+                className={`btn-outline ${selectedProviderTab === 'gemini' ? 'active' : ''}`}
+                style={{
+                  flex: 1,
+                  padding: '7px 10px',
+                  fontSize: '0.78rem',
+                  fontWeight: selectedProviderTab === 'gemini' ? 700 : 500,
+                  background: selectedProviderTab === 'gemini' ? 'var(--theme-gradient)' : 'transparent',
+                  color: selectedProviderTab === 'gemini' ? '#000' : 'var(--text-sub)',
+                  borderColor: selectedProviderTab === 'gemini' ? 'transparent' : 'var(--border-glass)'
+                }}
+                onClick={() => { setSelectedProviderTab('gemini'); setTestResult(null); }}
+              >
+                ✨ Google Gemini
+              </button>
+              <button 
+                type="button"
+                className={`btn-outline ${selectedProviderTab === 'openai' ? 'active' : ''}`}
+                style={{
+                  flex: 1,
+                  padding: '7px 10px',
+                  fontSize: '0.78rem',
+                  fontWeight: selectedProviderTab === 'openai' ? 700 : 500,
+                  background: selectedProviderTab === 'openai' ? 'var(--theme-gradient)' : 'transparent',
+                  color: selectedProviderTab === 'openai' ? '#000' : 'var(--text-sub)',
+                  borderColor: selectedProviderTab === 'openai' ? 'transparent' : 'var(--border-glass)'
+                }}
+                onClick={() => { setSelectedProviderTab('openai'); setTestResult(null); }}
+              >
+                ⚡ OpenAI (GPT-4o)
+              </button>
+              <button 
+                type="button"
+                className={`btn-outline ${selectedProviderTab === 'anthropic' ? 'active' : ''}`}
+                style={{
+                  flex: 1,
+                  padding: '7px 10px',
+                  fontSize: '0.78rem',
+                  fontWeight: selectedProviderTab === 'anthropic' ? 700 : 500,
+                  background: selectedProviderTab === 'anthropic' ? 'var(--theme-gradient)' : 'transparent',
+                  color: selectedProviderTab === 'anthropic' ? '#000' : 'var(--text-sub)',
+                  borderColor: selectedProviderTab === 'anthropic' ? 'transparent' : 'var(--border-glass)'
+                }}
+                onClick={() => { setSelectedProviderTab('anthropic'); setTestResult(null); }}
+              >
+                🧠 Claude (Anthropic)
+              </button>
+            </div>
 
-            {configData.isConfigured && (
-              <div style={{ background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '8px 12px', borderRadius: '8px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#34d399', fontSize: '0.8rem', fontWeight: 600 }}>
-                  <CheckCircle2 size={16} /> API Key de Gemini Conectada ({configData.maskedKey})
+            {/* Provider Content */}
+            {selectedProviderTab === 'gemini' && (
+              <div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-sub)', marginBottom: '14px', lineHeight: 1.45 }}>
+                  <strong>Google Gemini 3.8 Flash</strong> es el motor predeterminado y recomendado. Dispone de visión multimodal rápida, lectura OCR de textos y títulos, y es accesible tanto de forma gratuita como mediante cuentas de pago.
+                </p>
+
+                {configData.gemini?.isConfigured && (
+                  <div style={{ background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '8px 12px', borderRadius: '8px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#34d399', fontSize: '0.8rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={16} /> Gemini Conectado ({configData.gemini.maskedKey || configData.maskedKey})
+                    </div>
+                    <button 
+                      className="btn-outline" 
+                      style={{ padding: '3px 8px', fontSize: '0.7rem', color: '#fda4af', borderColor: 'rgba(244, 63, 94, 0.4)', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => clearProviderKey('gemini')}
+                      title="Eliminar clave configurada"
+                    >
+                      <Trash2 size={12} /> Eliminar
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-main)', display: 'block', marginBottom: '5px' }}>
+                    {configData.gemini?.isConfigured ? 'Reemplazar Gemini API Key (opcional)' : 'Gemini API Key'}
+                  </label>
+                  <input 
+                    type="password"
+                    className="input-field"
+                    placeholder={configData.gemini?.isConfigured ? 'Deja en blanco para conservar la clave actual...' : 'Pega tu clave (gratuita o de facturación de pago)...'}
+                    value={geminiKeyInput}
+                    onChange={e => { setGeminiKeyInput(e.target.value); setTestResult(null); }}
+                  />
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                    💡 Da igual si tu API Key es gratuita o de pago por uso; ambas funcionan con la misma estructura y endpoints.
+                  </span>
                 </div>
-                <button 
-                  className="btn-outline" 
-                  style={{ padding: '3px 8px', fontSize: '0.7rem', color: '#fda4af', borderColor: 'rgba(244, 63, 94, 0.4)', display: 'flex', alignItems: 'center', gap: '4px' }}
-                  onClick={clearApiKey}
-                  title="Eliminar clave configurada"
-                >
-                  <Trash2 size={12} /> Eliminar
-                </button>
+
+                <div style={{ marginBottom: '14px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-sub)', display: 'block', marginBottom: '5px' }}>Modelo Multimodal Gemini</label>
+                  <select 
+                    className="input-field" 
+                    value={geminiModelSelect} 
+                    onChange={e => setGeminiModelSelect(e.target.value)}
+                  >
+                    <option value="gemini-3.8-flash">Gemini 3.8 Flash (Recomendado - Ultrarrápido, Multimodal & OCR)</option>
+                    <option value="gemini-flash-latest">Gemini Flash Latest</option>
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: '14px' }}>
+                  <a 
+                    href="https://aistudio.google.com/app/apikey" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    style={{ fontSize: '0.76rem', color: 'var(--accent-cyan)', display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+                  >
+                    Obtener API Key gratuita en Google AI Studio <ExternalLink size={12} />
+                  </a>
+                </div>
               </div>
             )}
 
-            <div style={{ marginBottom: '12px' }}>
-              <label style={{ fontSize: '0.8rem', color: 'var(--text-main)', display: 'block', marginBottom: '5px' }}>
-                {configData.isConfigured ? 'Reemplazar API Key (opcional)' : 'Gemini API Key'}
-              </label>
-              <input 
-                type="password"
-                className="input-field"
-                placeholder={configData.isConfigured ? 'Deja en blanco para conservar la clave actual...' : 'Pega aquí tu API Key de Gemini...'}
-                value={apiKeyInput}
-                onChange={e => setApiKeyInput(e.target.value)}
-              />
+            {selectedProviderTab === 'openai' && (
+              <div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-sub)', marginBottom: '14px', lineHeight: 1.45 }}>
+                  Utiliza los modelos de <strong>OpenAI</strong> con capacidades de visión para escanear fotogramas, detectar cabeceras y redactar copys para redes sociales.
+                </p>
+
+                {configData.openai?.isConfigured && (
+                  <div style={{ background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '8px 12px', borderRadius: '8px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#34d399', fontSize: '0.8rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={16} /> OpenAI Conectado ({configData.openai.maskedKey})
+                    </div>
+                    <button 
+                      className="btn-outline" 
+                      style={{ padding: '3px 8px', fontSize: '0.7rem', color: '#fda4af', borderColor: 'rgba(244, 63, 94, 0.4)', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => clearProviderKey('openai')}
+                      title="Eliminar clave configurada"
+                    >
+                      <Trash2 size={12} /> Eliminar
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-main)', display: 'block', marginBottom: '5px' }}>
+                    {configData.openai?.isConfigured ? 'Reemplazar OpenAI API Key (opcional)' : 'OpenAI API Key (sk-...)'}
+                  </label>
+                  <input 
+                    type="password"
+                    className="input-field"
+                    placeholder={configData.openai?.isConfigured ? 'Deja en blanco para conservar la clave actual...' : 'sk-...'}
+                    value={openaiKeyInput}
+                    onChange={e => { setOpenaiKeyInput(e.target.value); setTestResult(null); }}
+                  />
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                    💡 Compatible con cualquier clave de proyecto o cuenta OpenAI con saldo activo.
+                  </span>
+                </div>
+
+                <div style={{ marginBottom: '14px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-sub)', display: 'block', marginBottom: '5px' }}>Modelo OpenAI</label>
+                  <select 
+                    className="input-field" 
+                    value={openaiModelSelect} 
+                    onChange={e => setOpenaiModelSelect(e.target.value)}
+                  >
+                    <option value="gpt-4o-mini">GPT-4o Mini (Recomendado - Rápido, económico & Multimodal)</option>
+                    <option value="gpt-4o">GPT-4o (Máxima capacidad de visión y razonamiento)</option>
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: '14px' }}>
+                  <a 
+                    href="https://platform.openai.com/api-keys" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    style={{ fontSize: '0.76rem', color: 'var(--accent-cyan)', display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+                  >
+                    Obtener API Key en OpenAI Platform <ExternalLink size={12} />
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {selectedProviderTab === 'anthropic' && (
+              <div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-sub)', marginBottom: '14px', lineHeight: 1.45 }}>
+                  Conecta <strong>Anthropic Claude 3.5</strong> para un análisis minucioso de metraje, OCR detallado y redacción con estilo natural y persuasivo.
+                </p>
+
+                {configData.anthropic?.isConfigured && (
+                  <div style={{ background: 'rgba(16, 185, 129, 0.12)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '8px 12px', borderRadius: '8px', marginBottom: '12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#34d399', fontSize: '0.8rem', fontWeight: 600 }}>
+                      <CheckCircle2 size={16} /> Anthropic Claude Conectado ({configData.anthropic.maskedKey})
+                    </div>
+                    <button 
+                      className="btn-outline" 
+                      style={{ padding: '3px 8px', fontSize: '0.7rem', color: '#fda4af', borderColor: 'rgba(244, 63, 94, 0.4)', display: 'flex', alignItems: 'center', gap: '4px' }}
+                      onClick={() => clearProviderKey('anthropic')}
+                      title="Eliminar clave configurada"
+                    >
+                      <Trash2 size={12} /> Eliminar
+                    </button>
+                  </div>
+                )}
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-main)', display: 'block', marginBottom: '5px' }}>
+                    {configData.anthropic?.isConfigured ? 'Reemplazar Anthropic API Key (opcional)' : 'Anthropic API Key (sk-ant-...)'}
+                  </label>
+                  <input 
+                    type="password"
+                    className="input-field"
+                    placeholder={configData.anthropic?.isConfigured ? 'Deja en blanco para conservar la clave actual...' : 'sk-ant-...'}
+                    value={anthropicKeyInput}
+                    onChange={e => { setAnthropicKeyInput(e.target.value); setTestResult(null); }}
+                  />
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                    💡 Compatible con API Keys generadas desde Anthropic Console.
+                  </span>
+                </div>
+
+                <div style={{ marginBottom: '14px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-sub)', display: 'block', marginBottom: '5px' }}>Modelo Claude</label>
+                  <select 
+                    className="input-field" 
+                    value={anthropicModelSelect} 
+                    onChange={e => setAnthropicModelSelect(e.target.value)}
+                  >
+                    <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet (Recomendado - Gran precisión y visión)</option>
+                    <option value="claude-3-haiku-20240307">Claude 3 Haiku (Ultra rápido)</option>
+                  </select>
+                </div>
+
+                <div style={{ marginBottom: '14px' }}>
+                  <a 
+                    href="https://console.anthropic.com/settings/keys" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    style={{ fontSize: '0.76rem', color: 'var(--accent-cyan)', display: 'inline-flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
+                  >
+                    Obtener API Key en Anthropic Console <ExternalLink size={12} />
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {/* Test Connection Button & Status Box */}
+            <div style={{ marginBottom: '16px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-glass)', borderRadius: '8px', padding: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: testResult ? '10px' : '0' }}>
+                <span style={{ fontSize: '0.78rem', color: 'var(--text-sub)' }}>
+                  ¿Quieres comprobar si la clave funciona antes de guardar?
+                </span>
+                <button 
+                  type="button"
+                  className="btn-outline" 
+                  style={{ padding: '5px 12px', fontSize: '0.76rem', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  onClick={testCurrentApiKey}
+                  disabled={testingKey}
+                >
+                  {testingKey ? <RefreshCw className="spin" size={13} /> : <Zap size={13} color="var(--accent-cyan)" />}
+                  {testingKey ? 'Comprobando...' : '⚡ Comprobar API Key'}
+                </button>
+              </div>
+
+              {testResult && (
+                <div style={{
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  fontSize: '0.76rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  background: testResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  border: `1px solid ${testResult.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(239, 68, 68, 0.4)'}`,
+                  color: testResult.success ? '#34d399' : '#f87171'
+                }}>
+                  {testResult.success ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
+                  <span>{testResult.success ? `${testResult.message} • Respuesta OK` : testResult.error}</span>
+                </div>
+              )}
             </div>
 
-            <div style={{ marginBottom: '16px' }}>
-              <label style={{ fontSize: '0.8rem', color: 'var(--text-sub)', display: 'block', marginBottom: '5px' }}>Modelo Multimodal</label>
-              <select 
-                className="input-field" 
-                value={configData.geminiModel} 
-                onChange={e => setConfigData({ ...configData, geminiModel: e.target.value })}
-              >
-                <option value="gemini-3.8-flash">Gemini 3.8 Flash (Recomendado - Multimodal & OCR)</option>
-                <option value="gemini-flash-latest">Gemini Flash Latest</option>
-              </select>
-            </div>
+            {configSaveMsg && (
+              <div style={{ textAlign: 'center', marginBottom: '12px', fontSize: '0.82rem', fontWeight: 600 }}>
+                {configSaveMsg}
+              </div>
+            )}
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <a 
-                href="https://aistudio.google.com/app/apikey" 
-                target="_blank" 
-                rel="noreferrer"
-                style={{ fontSize: '0.76rem', color: 'var(--accent-cyan)', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
-              >
-                Obtener API Key en Google AI Studio <ExternalLink size={12} />
-              </a>
-              {configSaveMsg && <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{configSaveMsg}</span>}
-            </div>
-
-            <button className="btn-glow" style={{ width: '100%', justifyContent: 'center' }} onClick={saveConfig}>
-              <CheckCheck size={16} /> Guardar Configuración
+            <button className="btn-glow" style={{ width: '100%', justifyContent: 'center', padding: '10px' }} onClick={saveConfig}>
+              <CheckCheck size={16} /> Guardar & Activar {selectedProviderTab.toUpperCase()}
             </button>
 
+          </div>
+        </div>
+      )}
+
+      {/* DavTor Easter Egg Modal */}
+      {showDavTorModal && (
+        <div className="cinema-modal-overlay" onClick={() => setShowDavTorModal(false)}>
+          <div className="cinema-modal-content" onClick={e => e.stopPropagation()} style={{
+            maxWidth: '520px',
+            padding: '28px',
+            background: 'linear-gradient(145deg, #0b1120, #040711)',
+            border: '1px solid rgba(251, 191, 36, 0.45)',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.8), 0 0 35px rgba(251, 191, 36, 0.25)',
+            textAlign: 'center'
+          }}>
+            <div style={{
+              width: '64px',
+              height: '64px',
+              margin: '0 auto 16px auto',
+              borderRadius: '50%',
+              background: 'linear-gradient(135deg, #fbbf24, #f59e0b)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              boxShadow: '0 0 25px rgba(251, 191, 36, 0.6)'
+            }}>
+              <Heart size={32} color="#000" fill="#000" />
+            </div>
+
+            <div style={{
+              display: 'inline-block',
+              padding: '3px 12px',
+              borderRadius: '20px',
+              background: 'rgba(251, 191, 36, 0.15)',
+              border: '1px solid rgba(251, 191, 36, 0.4)',
+              color: '#fbbf24',
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              letterSpacing: '1px',
+              marginBottom: '12px'
+            }}>
+              SPECIAL HOMAGE UNLOCKED
+            </div>
+
+            <h2 style={{
+              fontSize: '1.45rem',
+              fontWeight: 800,
+              color: '#fff',
+              marginBottom: '8px',
+              background: 'linear-gradient(135deg, #fbbf24, #f59e0b, #00f2fe)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent'
+            }}>
+              Con cariño para DavTor
+            </h2>
+
+            <p style={{
+              fontSize: '0.86rem',
+              color: '#cbd5e1',
+              lineHeight: 1.6,
+              marginBottom: '22px'
+            }}>
+              Esta suite ha sido diseñada y perfeccionada con muchísimo cariño, precisión y dedicación para <strong>DavTor</strong>. 
+              Que cada vídeo procesado en lote, cada recorte automático y cada copy generado te ahorren cientos de horas y hagan brillar tu creatividad al máximo nivel. 🚀
+            </p>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+              <button 
+                className="btn-glow" 
+                style={{
+                  background: 'linear-gradient(135deg, #fbbf24, #d97706)',
+                  color: '#000',
+                  fontWeight: 800
+                }}
+                onClick={() => {
+                  setCurrentTheme('davtor-gold');
+                  setShowDavTorModal(false);
+                }}
+              >
+                👑 Activar Tema Oro DavTor
+              </button>
+              <button 
+                className="btn-outline" 
+                onClick={() => setShowDavTorModal(false)}
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         </div>
       )}

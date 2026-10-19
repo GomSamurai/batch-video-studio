@@ -133,6 +133,22 @@
   --theme-color-dot: #38bdf8;
 }
 
+[data-theme="davtor-gold"] {
+  --theme-primary: #fbbf24;
+  --theme-secondary: #00F2FE;
+  --theme-accent: #f59e0b;
+  --theme-gradient: linear-gradient(135deg, #fbbf24 0%, #00F2FE 100%);
+  --theme-glow: 0 0 28px rgba(251, 191, 36, 0.45);
+  --theme-glow-color: rgba(251, 191, 36, 0.5);
+  --theme-bg-radial-1: rgba(251, 191, 36, 0.18);
+  --theme-bg-radial-2: rgba(0, 242, 254, 0.14);
+  --theme-bg-radial-3: rgba(217, 119, 6, 0.12);
+  --theme-badge-bg: rgba(251, 191, 36, 0.18);
+  --theme-badge-border: rgba(251, 191, 36, 0.5);
+  --theme-name: 'DavTor Gold Edition';
+  --theme-color-dot: #fbbf24;
+}
+
 * {
   box-sizing: border-box;
   margin: 0;

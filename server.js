@@ -27,8 +27,13 @@ if (!fs.existsSync(BASE_STORAGE_DIR)) {
 
 const CONFIG_FILE = path.join(BASE_STORAGE_DIR, 'config.json');
 let config = {
+  aiProvider: 'gemini', // 'gemini' | 'openai' | 'anthropic'
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: 'gemini-3.8-flash',
+  openaiApiKey: process.env.OPENAI_API_KEY || '',
+  openaiModel: 'gpt-4o-mini',
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
+  anthropicModel: 'claude-3-5-sonnet-20241022'
 };
 
 // Check candidate config files across storage, workspace, and resources
@@ -46,12 +51,29 @@ for (const cPath of candidateConfigFiles) {
   if (fs.existsSync(cPath)) {
     try {
       const loadedConfig = JSON.parse(fs.readFileSync(cPath, 'utf-8'));
+      if (loadedConfig.aiProvider && !config.aiProvider) {
+        config.aiProvider = loadedConfig.aiProvider;
+      }
       if (loadedConfig.geminiApiKey && !config.geminiApiKey) {
         config.geminiApiKey = loadedConfig.geminiApiKey.trim();
         console.log(`[Config] API Key de Gemini cargada desde ${cPath}`);
       }
       if (loadedConfig.geminiModel && (!config.geminiModel || config.geminiModel === 'gemini-2.5-flash')) {
         config.geminiModel = loadedConfig.geminiModel === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : loadedConfig.geminiModel;
+      }
+      if (loadedConfig.openaiApiKey && !config.openaiApiKey) {
+        config.openaiApiKey = loadedConfig.openaiApiKey.trim();
+        console.log(`[Config] API Key de OpenAI cargada desde ${cPath}`);
+      }
+      if (loadedConfig.openaiModel) {
+        config.openaiModel = loadedConfig.openaiModel;
+      }
+      if (loadedConfig.anthropicApiKey && !config.anthropicApiKey) {
+        config.anthropicApiKey = loadedConfig.anthropicApiKey.trim();
+        console.log(`[Config] API Key de Anthropic Claude cargada desde ${cPath}`);
+      }
+      if (loadedConfig.anthropicModel) {
+        config.anthropicModel = loadedConfig.anthropicModel;
       }
     } catch (e) {
       // ignore parse errors
@@ -60,7 +82,7 @@ for (const cPath of candidateConfigFiles) {
 }
 
 // Persist config to CONFIG_FILE if it exists and had an API key
-if (config.geminiApiKey && !fs.existsSync(CONFIG_FILE)) {
+if ((config.geminiApiKey || config.openaiApiKey || config.anthropicApiKey) && !fs.existsSync(CONFIG_FILE)) {
   try {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
     console.log(`[Config] Configuración inicial guardada en ${CONFIG_FILE}`);
@@ -354,19 +376,11 @@ async function extractKeyframes(videoPath, duration, count = 12) {
 }
 
 // -------------------------------------------------------------
-// Gemini Multimodal Vision API (Dense Temporal & OCR Prompt)
+// Multi-Provider AI Multimodal Vision (Gemini, OpenAI, Anthropic Claude)
 // -------------------------------------------------------------
-async function callGeminiVision(keyframes, duration, requestedTone = 'Profesional', videoName = '') {
-  const apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('No se ha configurado la API Key de Gemini. Añádela en Configuración para activar la visión real por IA.');
-  }
-
-  const model = config.geminiModel || 'gemini-3.8-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-
-  const promptText = `Actúas como un editor de vídeo experto y analista visual de contenido multimedia.
-Estoy proporcionando ${keyframes.length} fotogramas clave con sus marcas de tiempo exactas en segundos, correspondientes al archivo "${videoName}" (duración total: ${duration.toFixed(1)}s).
+function buildVisionPrompt(duration, requestedTone = 'Profesional', videoName = '', keyframesCount = 12) {
+  return `Actúas como un editor de vídeo experto y analista visual de contenido multimedia.
+Estoy proporcionando ${keyframesCount} fotogramas clave con sus marcas de tiempo exactas en segundos, correspondientes al archivo "${videoName}" (duración total: ${duration.toFixed(1)}s).
 
 INSTRUCCIONES CRÍTICAS DE ANÁLISIS VISUAL Y OCR:
 1. DETECTAR CABECERA / TÍTULO / PLACA DE INICIO (introCutSeconds):
@@ -402,6 +416,59 @@ RESPONDE EXCLUSIVAMENTE CON UN OBJETO JSON VÁLIDO CON ESTA ESTRUCTURA EXACTA:
   "linkedinCopy": "texto completo del post para LinkedIn con gancho, desarrollo y llamada a la acción",
   "hashtags": ["#Tag1", "#Tag2", "#Tag3"]
 }`;
+}
+
+function parseJsonFromModelResponse(textOutput) {
+  if (!textOutput) return null;
+  try {
+    const cleanJson = textOutput.replace(/```json/gi, '').replace(/```/g, '').trim();
+    const firstBrace = cleanJson.indexOf('{');
+    const lastBrace = cleanJson.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(cleanJson.slice(firstBrace, lastBrace + 1));
+    }
+    return JSON.parse(cleanJson);
+  } catch (err) {
+    console.warn('[Model JSON parse warning]:', err.message);
+    return null;
+  }
+}
+
+function getActiveAiConfig() {
+  const provider = config.aiProvider || 'gemini';
+  let apiKey = '';
+  let model = '';
+
+  if (provider === 'openai') {
+    apiKey = config.openaiApiKey || process.env.OPENAI_API_KEY || '';
+    model = config.openaiModel || 'gpt-4o-mini';
+  } else if (provider === 'anthropic') {
+    apiKey = config.anthropicApiKey || process.env.ANTHROPIC_API_KEY || '';
+    model = config.anthropicModel || 'claude-3-5-sonnet-20241022';
+  } else {
+    // gemini default
+    apiKey = config.geminiApiKey || process.env.GEMINI_API_KEY || '';
+    model = config.geminiModel || 'gemini-3.8-flash';
+  }
+
+  return {
+    provider,
+    apiKey,
+    model,
+    isConfigured: !!apiKey
+  };
+}
+
+// Gemini Vision Implementation
+async function callGeminiVision(keyframes, duration, requestedTone = 'Profesional', videoName = '', customKey = null, customModel = null) {
+  const apiKey = customKey || config.geminiApiKey || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('No se ha configurado la API Key de Google Gemini.');
+  }
+
+  const model = customModel || config.geminiModel || 'gemini-3.8-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const promptText = buildVisionPrompt(duration, requestedTone, videoName, keyframes.length);
 
   const parts = [{ text: promptText }];
   for (const kf of keyframes) {
@@ -439,22 +506,296 @@ RESPONDE EXCLUSIVAMENTE CON UN OBJETO JSON VÁLIDO CON ESTA ESTRUCTURA EXACTA:
     throw new Error('Gemini no devolvió texto en la respuesta.');
   }
 
-  try {
-    const cleanJson = textOutput.replace(/```json/g, '').replace(/```/g, '').trim();
-    return JSON.parse(cleanJson);
-  } catch (parseErr) {
+  const parsed = parseJsonFromModelResponse(textOutput);
+  if (parsed) return parsed;
+
+  return {
+    hasIntroLogo: false,
+    introCutSeconds: 0,
+    introDetails: 'No detectado',
+    hasOutroCard: false,
+    outroCutSeconds: 0,
+    outroDetails: 'No detectado',
+    visualSummary: textOutput.slice(0, 150),
+    topic: 'Contenido General',
+    detectedText: '',
+    linkedinCopy: textOutput,
+    hashtags: ['#Video', '#Productividad', '#Innovacion']
+  };
+}
+
+// OpenAI Multimodal Vision Implementation
+async function callOpenAiVision(keyframes, duration, requestedTone = 'Profesional', videoName = '', customKey = null, customModel = null) {
+  const apiKey = customKey || config.openaiApiKey || process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error('No se ha configurado la API Key de OpenAI.');
+  }
+
+  const model = customModel || config.openaiModel || 'gpt-4o-mini';
+  const url = 'https://api.openai.com/v1/chat/completions';
+  const promptText = buildVisionPrompt(duration, requestedTone, videoName, keyframes.length);
+
+  const contentArray = [
+    { type: 'text', text: promptText }
+  ];
+
+  for (const kf of keyframes) {
+    contentArray.push({
+      type: 'text',
+      text: `[FOTOGRAMA EN EL SEGUNDO ${kf.timestamp.toFixed(1)}s]:`
+    });
+    contentArray.push({
+      type: 'image_url',
+      image_url: {
+        url: `data:image/jpeg;base64,${kf.base64}`,
+        detail: 'low'
+      }
+    });
+  }
+
+  const payload = {
+    model,
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    messages: [
+      {
+        role: 'system',
+        content: 'Eres un editor de vídeo profesional y asistente de visión para análisis de metraje y redacción de copys. Debes responder estrictamente con el JSON solicitado.'
+      },
+      {
+        role: 'user',
+        content: contentArray
+      }
+    ]
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Error en API de OpenAI (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  const textOutput = data.choices?.[0]?.message?.content;
+  if (!textOutput) {
+    throw new Error('OpenAI no devolvió texto en la respuesta.');
+  }
+
+  const parsed = parseJsonFromModelResponse(textOutput);
+  if (parsed) return parsed;
+
+  return {
+    hasIntroLogo: false,
+    introCutSeconds: 0,
+    introDetails: 'No detectado',
+    hasOutroCard: false,
+    outroCutSeconds: 0,
+    outroDetails: 'No detectado',
+    visualSummary: textOutput.slice(0, 150),
+    topic: 'Contenido General',
+    detectedText: '',
+    linkedinCopy: textOutput,
+    hashtags: ['#Video', '#Productividad', '#Innovacion']
+  };
+}
+
+// Anthropic Claude Multimodal Vision Implementation
+async function callAnthropicVision(keyframes, duration, requestedTone = 'Profesional', videoName = '', customKey = null, customModel = null) {
+  const apiKey = customKey || config.anthropicApiKey || process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error('No se ha configurado la API Key de Anthropic Claude.');
+  }
+
+  const model = customModel || config.anthropicModel || 'claude-3-5-sonnet-20241022';
+  const url = 'https://api.anthropic.com/v1/messages';
+  const promptText = buildVisionPrompt(duration, requestedTone, videoName, keyframes.length);
+
+  const contentArray = [];
+  for (const kf of keyframes) {
+    contentArray.push({
+      type: 'image',
+      source: {
+        type: 'base64',
+        media_type: 'image/jpeg',
+        data: kf.base64
+      }
+    });
+  }
+
+  contentArray.push({
+    type: 'text',
+    text: promptText + '\n\nIMPORTANTE: Devuelve ÚNICAMENTE el objeto JSON requerido, sin bloques markdown adicionales.'
+  });
+
+  const payload = {
+    model,
+    max_tokens: 2500,
+    temperature: 0.2,
+    messages: [
+      {
+        role: 'user',
+        content: contentArray
+      }
+    ]
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Error en API de Anthropic (${response.status}): ${errorText}`);
+  }
+
+  const data = await response.json();
+  const textOutput = data.content?.[0]?.text;
+  if (!textOutput) {
+    throw new Error('Anthropic Claude no devolvió texto en la respuesta.');
+  }
+
+  const parsed = parseJsonFromModelResponse(textOutput);
+  if (parsed) return parsed;
+
+  return {
+    hasIntroLogo: false,
+    introCutSeconds: 0,
+    introDetails: 'No detectado',
+    hasOutroCard: false,
+    outroCutSeconds: 0,
+    outroDetails: 'No detectado',
+    visualSummary: textOutput.slice(0, 150),
+    topic: 'Contenido General',
+    detectedText: '',
+    linkedinCopy: textOutput,
+    hashtags: ['#Video', '#Productividad', '#Innovacion']
+  };
+}
+
+// Unified Multimodal Dispatcher
+async function callAiVision(keyframes, duration, requestedTone = 'Profesional', videoName = '') {
+  const active = getActiveAiConfig();
+  if (!active.isConfigured) {
+    throw new Error(`No hay ninguna API Key configurada para el proveedor activo (${active.provider}).`);
+  }
+
+  if (active.provider === 'openai') {
+    return await callOpenAiVision(keyframes, duration, requestedTone, videoName, active.apiKey, active.model);
+  } else if (active.provider === 'anthropic') {
+    return await callAnthropicVision(keyframes, duration, requestedTone, videoName, active.apiKey, active.model);
+  } else {
+    // Default gemini
+    return await callGeminiVision(keyframes, duration, requestedTone, videoName, active.apiKey, active.model);
+  }
+}
+
+// Lightweight Real-time API Connection Checker
+async function testAiConnection(provider, apiKey, model) {
+  const t0 = Date.now();
+  if (provider === 'openai') {
+    const m = model || 'gpt-4o-mini';
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: m,
+        messages: [{ role: 'user', content: 'Ping' }],
+        max_tokens: 3
+      })
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      let msg = err;
+      try {
+        const j = JSON.parse(err);
+        if (j.error?.message) msg = j.error.message;
+      } catch (e) {}
+      throw new Error(`OpenAI HTTP ${res.status}: ${msg}`);
+    }
+    await res.json();
     return {
-      hasIntroLogo: false,
-      introCutSeconds: 0,
-      introDetails: 'No detectado',
-      hasOutroCard: false,
-      outroCutSeconds: 0,
-      outroDetails: 'No detectado',
-      visualSummary: textOutput.slice(0, 150),
-      topic: 'Contenido General',
-      detectedText: '',
-      linkedinCopy: textOutput,
-      hashtags: ['#Video', '#Productividad', '#Innovacion']
+      success: true,
+      provider: 'openai',
+      model: m,
+      latencyMs: Date.now() - t0,
+      message: `Conexión con OpenAI verificada con éxito (${Date.now() - t0}ms)`
+    };
+  } else if (provider === 'anthropic') {
+    const m = model || 'claude-3-5-sonnet-20241022';
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: m,
+        max_tokens: 5,
+        messages: [{ role: 'user', content: 'Ping' }]
+      })
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      let msg = err;
+      try {
+        const j = JSON.parse(err);
+        if (j.error?.message) msg = j.error.message;
+      } catch (e) {}
+      throw new Error(`Anthropic Claude HTTP ${res.status}: ${msg}`);
+    }
+    await res.json();
+    return {
+      success: true,
+      provider: 'anthropic',
+      model: m,
+      latencyMs: Date.now() - t0,
+      message: `Conexión con Anthropic Claude verificada con éxito (${Date.now() - t0}ms)`
+    };
+  } else {
+    // gemini
+    const m = model || 'gemini-3.8-flash';
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: 'Ping' }] }],
+        generationConfig: { maxOutputTokens: 3 }
+      })
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      let msg = err;
+      try {
+        const j = JSON.parse(err);
+        if (j.error?.message) msg = j.error.message;
+      } catch (e) {}
+      throw new Error(`Google Gemini HTTP ${res.status}: ${msg}`);
+    }
+    await res.json();
+    return {
+      success: true,
+      provider: 'gemini',
+      model: m,
+      latencyMs: Date.now() - t0,
+      message: `Conexión con Google Gemini verificada con éxito (${Date.now() - t0}ms)`
     };
   }
 }
@@ -463,25 +804,27 @@ RESPONDE EXCLUSIVAMENTE CON UN OBJETO JSON VÁLIDO CON ESTA ESTRUCTURA EXACTA:
 async function generateCopyForProcessedVideo(rawPath, tone = 'Profesional', videoName = '') {
   const videoPath = resolveExistingVideoPath(rawPath) || rawPath;
   const cleanTitle = path.basename(videoName || videoPath).replace(/\.[^/.]+$/, "");
+  const activeAi = getActiveAiConfig();
   
-  if (config.geminiApiKey && videoPath && fs.existsSync(videoPath)) {
+  if (activeAi.isConfigured && videoPath && fs.existsSync(videoPath)) {
     try {
       const info = await probeVideoInfo(videoPath);
       const keyframes = await extractKeyframes(videoPath, info.duration, 8);
-      const geminiResult = await callGeminiVision(keyframes, info.duration, tone, videoName || path.basename(videoPath));
+      const aiResult = await callAiVision(keyframes, info.duration, tone, videoName || path.basename(videoPath));
       
       return {
         videoPath,
         videoName: videoName || path.basename(videoPath),
         title: cleanTitle,
-        summary: geminiResult.visualSummary,
-        detectedText: geminiResult.detectedText || '',
-        copy: geminiResult.linkedinCopy,
-        hashtags: geminiResult.hashtags || ['#Tecnologia', '#Innovacion'],
-        aiGenerated: true
+        summary: aiResult.visualSummary,
+        detectedText: aiResult.detectedText || '',
+        copy: aiResult.linkedinCopy,
+        hashtags: aiResult.hashtags || ['#Tecnologia', '#Innovacion'],
+        aiGenerated: true,
+        provider: `${activeAi.provider.toUpperCase()} (${activeAi.model})`
       };
     } catch (e) {
-      console.warn(`Fallo al generar copy Gemini para ${videoName}:`, e.message);
+      console.warn(`Fallo al generar copy con ${activeAi.provider} para ${videoName}:`, e.message);
     }
   }
 
@@ -602,10 +945,16 @@ function computeKeptIntervals(totalDuration, introTrim = 0, outroTrim = 0, delet
 // Endpoints: Status & Config
 // -------------------------------------------------------------
 app.get('/api/status', (req, res) => {
+  const activeAi = getActiveAiConfig();
   res.json({
     status: 'online',
     ffmpegAvailable,
     hasGeminiKey: !!config.geminiApiKey,
+    hasOpenaiKey: !!config.openaiApiKey,
+    hasAnthropicKey: !!config.anthropicApiKey,
+    hasAiKey: activeAi.isConfigured,
+    aiProvider: config.aiProvider || 'gemini',
+    activeModel: activeAi.model,
     geminiModel: config.geminiModel || 'gemini-3.8-flash',
     cwd: process.cwd(),
     os: process.platform
@@ -613,8 +962,27 @@ app.get('/api/status', (req, res) => {
 });
 
 app.get('/api/config', (req, res) => {
+  const activeAi = getActiveAiConfig();
   res.json({
-    isConfigured: !!config.geminiApiKey,
+    isConfigured: activeAi.isConfigured,
+    activeProvider: config.aiProvider || 'gemini',
+    aiProvider: config.aiProvider || 'gemini',
+    gemini: {
+      isConfigured: !!config.geminiApiKey,
+      maskedKey: config.geminiApiKey ? '••••••••' + config.geminiApiKey.slice(-4) : '',
+      model: config.geminiModel || 'gemini-3.8-flash'
+    },
+    openai: {
+      isConfigured: !!config.openaiApiKey,
+      maskedKey: config.openaiApiKey ? '••••••••' + config.openaiApiKey.slice(-4) : '',
+      model: config.openaiModel || 'gpt-4o-mini'
+    },
+    anthropic: {
+      isConfigured: !!config.anthropicApiKey,
+      maskedKey: config.anthropicApiKey ? '••••••••' + config.anthropicApiKey.slice(-4) : '',
+      model: config.anthropicModel || 'claude-3-5-sonnet-20241022'
+    },
+    // Backwards-compatible legacy fields
     hasGeminiKey: !!config.geminiApiKey,
     maskedKey: config.geminiApiKey ? '••••••••' + config.geminiApiKey.slice(-4) : '',
     geminiModel: config.geminiModel || 'gemini-3.8-flash'
@@ -622,18 +990,40 @@ app.get('/api/config', (req, res) => {
 });
 
 app.post('/api/config', (req, res) => {
-  const { geminiApiKey, geminiModel } = req.body;
+  const { 
+    aiProvider,
+    geminiApiKey, geminiModel,
+    openaiApiKey, openaiModel,
+    anthropicApiKey, anthropicModel
+  } = req.body;
 
-  // Only update if a genuine non-empty key was passed, or explicit '__CLEAR__'
+  if (aiProvider && ['gemini', 'openai', 'anthropic'].includes(aiProvider)) {
+    config.aiProvider = aiProvider;
+  }
+
+  // Gemini
   if (typeof geminiApiKey === 'string' && geminiApiKey.trim().length > 0) {
     config.geminiApiKey = geminiApiKey.trim();
   } else if (geminiApiKey === '__CLEAR__') {
     config.geminiApiKey = '';
   }
+  if (geminiModel) config.geminiModel = geminiModel;
 
-  if (geminiModel) {
-    config.geminiModel = geminiModel;
+  // OpenAI
+  if (typeof openaiApiKey === 'string' && openaiApiKey.trim().length > 0) {
+    config.openaiApiKey = openaiApiKey.trim();
+  } else if (openaiApiKey === '__CLEAR__') {
+    config.openaiApiKey = '';
   }
+  if (openaiModel) config.openaiModel = openaiModel;
+
+  // Anthropic
+  if (typeof anthropicApiKey === 'string' && anthropicApiKey.trim().length > 0) {
+    config.anthropicApiKey = anthropicApiKey.trim();
+  } else if (anthropicApiKey === '__CLEAR__') {
+    config.anthropicApiKey = '';
+  }
+  if (anthropicModel) config.anthropicModel = anthropicModel;
   
   try {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
@@ -643,15 +1033,71 @@ app.post('/api/config', (req, res) => {
     const rootConfig = 'c:\\VSCODE\\fframes\\config.json';
     try { if (fs.existsSync(rootConfig)) fs.writeFileSync(rootConfig, JSON.stringify(config, null, 2)); } catch (e) {}
 
+    const activeAi = getActiveAiConfig();
     res.json({
       success: true,
-      isConfigured: !!config.geminiApiKey,
+      isConfigured: activeAi.isConfigured,
+      activeProvider: config.aiProvider || 'gemini',
+      aiProvider: config.aiProvider || 'gemini',
+      gemini: {
+        isConfigured: !!config.geminiApiKey,
+        maskedKey: config.geminiApiKey ? '••••••••' + config.geminiApiKey.slice(-4) : '',
+        model: config.geminiModel
+      },
+      openai: {
+        isConfigured: !!config.openaiApiKey,
+        maskedKey: config.openaiApiKey ? '••••••••' + config.openaiApiKey.slice(-4) : '',
+        model: config.openaiModel
+      },
+      anthropic: {
+        isConfigured: !!config.anthropicApiKey,
+        maskedKey: config.anthropicApiKey ? '••••••••' + config.anthropicApiKey.slice(-4) : '',
+        model: config.anthropicModel
+      },
+      // Backwards-compatible legacy fields
       hasGeminiKey: !!config.geminiApiKey,
       maskedKey: config.geminiApiKey ? '••••••••' + config.geminiApiKey.slice(-4) : '',
       geminiModel: config.geminiModel
     });
   } catch (err) {
     res.status(500).json({ error: 'No se pudo guardar la configuración: ' + err.message });
+  }
+});
+
+// Endpoint: Test API Key in Real-time
+app.post('/api/config/test', async (req, res) => {
+  try {
+    const { provider, apiKey, model } = req.body;
+    const targetProvider = provider || config.aiProvider || 'gemini';
+    
+    let keyToTest = apiKey ? apiKey.trim() : '';
+    if (!keyToTest) {
+      if (targetProvider === 'openai') keyToTest = config.openaiApiKey;
+      else if (targetProvider === 'anthropic') keyToTest = config.anthropicApiKey;
+      else keyToTest = config.geminiApiKey;
+    }
+
+    if (!keyToTest) {
+      return res.status(400).json({
+        success: false,
+        error: `No hay API Key configurada para comprobar el proveedor ${targetProvider}. Ingresa o pega tu clave primero.`
+      });
+    }
+
+    let modelToTest = model;
+    if (!modelToTest) {
+      if (targetProvider === 'openai') modelToTest = config.openaiModel || 'gpt-4o-mini';
+      else if (targetProvider === 'anthropic') modelToTest = config.anthropicModel || 'claude-3-5-sonnet-20241022';
+      else modelToTest = config.geminiModel || 'gemini-3.8-flash';
+    }
+
+    const testResult = await testAiConnection(targetProvider, keyToTest, modelToTest);
+    res.json(testResult);
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err.message
+    });
   }
 });
 
@@ -953,40 +1399,41 @@ app.post('/api/ai/analyze-scene', async (req, res) => {
     const duration = mainInfo.duration;
 
     const deterministic = await detectBlackAndSilence(videoPath, duration);
+    const activeAi = getActiveAiConfig();
 
-    if (config.geminiApiKey) {
+    if (activeAi.isConfigured) {
       try {
         const keyframes = await extractKeyframes(videoPath, duration, 12);
-        const geminiResult = await callGeminiVision(
+        const aiResult = await callAiVision(
           keyframes,
           duration,
           'Profesional',
           path.basename(videoPath)
         );
 
-        const finalIntroCut = Math.max(deterministic.blackIntroEnd, geminiResult.introCutSeconds || 0);
-        const finalOutroCut = Math.max(0, geminiResult.outroCutSeconds || 0);
+        const finalIntroCut = Math.max(deterministic.blackIntroEnd, aiResult.introCutSeconds || 0);
+        const finalOutroCut = Math.max(0, aiResult.outroCutSeconds || 0);
 
         return res.json({
           videoPath,
           duration,
           aiAnalysis: {
-            hasIntroLogo: geminiResult.hasIntroLogo || finalIntroCut > 0,
+            hasIntroLogo: aiResult.hasIntroLogo || finalIntroCut > 0,
             introCutTimestamp: parseFloat(finalIntroCut.toFixed(2)),
-            introDetails: geminiResult.introDetails || '',
-            hasOutroCard: geminiResult.hasOutroCard || finalOutroCut > 0,
+            introDetails: aiResult.introDetails || '',
+            hasOutroCard: aiResult.hasOutroCard || finalOutroCut > 0,
             outroCutTimestamp: parseFloat((finalOutroCut > 0 ? duration - finalOutroCut : duration).toFixed(2)),
             outroCutSeconds: parseFloat(finalOutroCut.toFixed(2)),
-            outroDetails: geminiResult.outroDetails || '',
-            visualSummary: geminiResult.visualSummary,
-            detectedText: geminiResult.detectedText || '',
-            topic: geminiResult.topic,
+            outroDetails: aiResult.outroDetails || '',
+            visualSummary: aiResult.visualSummary,
+            detectedText: aiResult.detectedText || '',
+            topic: aiResult.topic,
             confidence: 0.98,
-            provider: 'Gemini 3.8 Flash Multimodal Vision'
+            provider: `${activeAi.provider.toUpperCase()} (${activeAi.model}) Multimodal Vision`
           }
         });
-      } catch (geminiErr) {
-        console.warn('Gemini vision falló, usando fallback determinista:', geminiErr.message);
+      } catch (aiErr) {
+        console.warn(`${activeAi.provider} vision falló, usando fallback determinista:`, aiErr.message);
       }
     }
 
@@ -1004,7 +1451,7 @@ app.post('/api/ai/analyze-scene', async (req, res) => {
         outroCutTimestamp: parseFloat(outroCutSuggested.toFixed(2)),
         outroCutSeconds: parseFloat((duration - outroCutSuggested).toFixed(2)),
         outroDetails: '',
-        visualSummary: 'Análisis determinista local. Conecta tu API Key de Gemini para visión multimodal completa.',
+        visualSummary: 'Análisis determinista local. Conecta tu API Key de Gemini, OpenAI o Claude para visión multimodal completa.',
         detectedText: '',
         confidence: 0.75,
         provider: 'FFmpeg Signal Engine'
